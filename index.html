@@ -344,7 +344,9 @@
   <div class="meta-panel hidden" id="meta-panel">
     <div class="meta-panel-header">
       <span class="meta-panel-title">Clip Details</span>
+      <button id="btn-download" class="btn-download">⬇ Download MP4</button>
     </div>
+    <div id="dl-progress" style="display:none;font-size:11px;color:var(--muted);margin-bottom:8px;"></div>
     <div class="meta-grid" id="meta-grid"></div>
   </div>
 </div>
@@ -391,6 +393,7 @@ let dataChannel = null;
 let sessionId   = null;
 let currentHubId = null;
 let pending     = null; // segment reassembly
+let dlPending   = null; // download reassembly
 
 const MQTT_BROKER = 'wss://broker.hivemq.com:8884/mqtt';
 const ICE_SERVERS = [
@@ -514,7 +517,7 @@ function teardown() {
   if (dataChannel) { try { dataChannel.close(); } catch {} dataChannel = null; }
   if (peerConn)    { try { peerConn.close();    } catch {} peerConn    = null; }
   if (mqttClient)  { mqttClient.end(true);                  mqttClient  = null; }
-  sessionId = null; currentHubId = null; pending = null;
+  sessionId = null; currentHubId = null; pending = null; dlPending = null;
 }
 
 // ── DataChannel messaging ──────────────────────────────────────────────────────
@@ -525,6 +528,15 @@ function requestClips() { dcSend({ type: 'get_clips' }); }
 
 function handleDCMessage(event) {
   if (event.data instanceof ArrayBuffer) {
+    if (dlPending) {
+      dlPending.chunks.push(new Uint8Array(event.data));
+      dlPending.received += event.data.byteLength;
+      const pct = Math.round(dlPending.received / dlPending.total * 100);
+      const mb  = (dlPending.received / 1024 / 1024).toFixed(1);
+      const tot = (dlPending.total    / 1024 / 1024).toFixed(1);
+      document.getElementById('dl-progress').textContent = `Downloading… ${pct}% (${mb} / ${tot} MB)`;
+      return;
+    }
     if (!pending) return;
     pending.chunks.push(new Uint8Array(event.data));
     pending.received += event.data.byteLength;
@@ -536,7 +548,36 @@ function handleDCMessage(event) {
   if (msg.type === 'clips')          { renderClips(msg.data);                                        return; }
   if (msg.type === 'thumb_chunk')    { receiveThumbChunk(msg);                                       return; }
   if (msg.type === 'segment_header') { pending = { clip_id: msg.clip_id, segment_index: msg.segment_index, total: msg.size_bytes, received: 0, chunks: [] }; return; }
-  if (msg.type === 'segment_end')    { if (!pending) return; const p = pending; pending = null; assembleSegment(p); return; }
+  if (msg.type === 'segment_end') {
+    if (!pending) return;
+    const p = pending;
+    pending = null;
+    // Pipeline: request next segment BEFORE mux.js processing so transfer and processing overlap
+    if (nextSegment < segmentCount) fetchSegment(nextSegment);
+    assembleSegment(p);
+    return;
+  }
+  if (msg.type === 'download_header') {
+    dlPending = { clip_id: msg.clip_id, filename: msg.filename, total: msg.size_bytes, received: 0, chunks: [] };
+    document.getElementById('btn-download').disabled = true;
+    document.getElementById('dl-progress').style.display = 'block';
+    document.getElementById('dl-progress').textContent = `Downloading… 0% (0 / ${(msg.size_bytes / 1024 / 1024).toFixed(1)} MB)`;
+    return;
+  }
+  if (msg.type === 'download_end') {
+    if (!dlPending) return;
+    const dp = dlPending;
+    dlPending = null;
+    const blob = new Blob(dp.chunks, { type: 'video/mp4' });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href = url; a.download = dp.filename;
+    document.body.appendChild(a); a.click();
+    setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 1000);
+    document.getElementById('btn-download').disabled = false;
+    document.getElementById('dl-progress').style.display = 'none';
+    return;
+  }
   if (msg.type === 'error')          { showStatus(`Hub: ${msg.message}`, 5000); return; }
 }
 
@@ -669,18 +710,36 @@ function playClip(meta) {
     fetchSegment(0);
   }, { once: true });
 
-  videoEl.ontimeupdate = () => {
-    if (!playingMeta) return;
-    const ahead = Math.floor(videoEl.currentTime / playingMeta.clip.segment_duration_seconds) + 2;
-    if (ahead > nextSegment && nextSegment < segmentCount) fetchSegment(nextSegment);
-  };
 }
 
 function drainQueue() {
   if (sbBusy || !sourceBuffer || sourceBuffer.updating || !sourceQueue.length) return;
   sbBusy = true;
+
+  // Evict already-played content to prevent QuotaExceededError on long videos
+  const ct = videoEl.currentTime;
+  if (ct > 10 && sourceBuffer.buffered.length > 0) {
+    const evictTo = ct - 5;
+    if (evictTo > 0 && sourceBuffer.buffered.start(0) < evictTo - 0.5) {
+      try {
+        sourceBuffer.remove(0, evictTo);
+        sourceBuffer.addEventListener('updateend', () => { sbBusy = false; drainQueue(); }, { once: true });
+        return;
+      } catch {}
+    }
+  }
+
   const chunk = sourceQueue.shift();
-  try { sourceBuffer.appendBuffer(chunk); } catch (e) { sbBusy = false; }
+  try {
+    sourceBuffer.appendBuffer(chunk);
+  } catch (e) {
+    sbBusy = false;
+    if (e.name === 'QuotaExceededError') {
+      sourceQueue.unshift(chunk);
+      setTimeout(drainQueue, 500);
+    }
+    return;
+  }
   sourceBuffer.addEventListener('updateend', () => {
     sbBusy = false;
     if (sourceQueue.length) drainQueue();
@@ -711,9 +770,6 @@ function assembleSegment(p) {
   transmuxer.flush();
 
   videoEl.play().catch(() => {});
-
-  const ahead = Math.floor(videoEl.currentTime / playingMeta.clip.segment_duration_seconds) + 2;
-  if (ahead > nextSegment && nextSegment < segmentCount) fetchSegment(nextSegment);
 }
 
 // ── Meta panel (same fields as index.html) ────────────────────────────────────
@@ -760,6 +816,10 @@ document.getElementById('btn-back').addEventListener('click', () => {
   stopPlayback();
   metaPanel.classList.add('hidden');
   showScreen('clips');
+});
+document.getElementById('btn-download').addEventListener('click', () => {
+  if (!playingMeta || dlPending) return;
+  dcSend({ type: 'get_download', clip_id: playingMeta.clip.id });
 });
 </script>
 </body>
