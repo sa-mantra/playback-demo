@@ -4,361 +4,412 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0" />
   <title>NVR Mobile</title>
-  <!-- MQTT.js for WebRTC signaling -->
   <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
-  <!-- mux.js for MPEG-TS → fMP4 transmuxing (iOS Safari MSE compat) -->
   <script src="https://cdn.jsdelivr.net/npm/mux.js/dist/mux.js"></script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
+    /* ── Exact same tokens as index.html ── */
     :root {
-      --bg:      #0a0c10;
-      --surface: #13171e;
-      --card:    #1a1f29;
-      --border:  #252c38;
+      --bg:      #0d0f12;
+      --surface: #161a20;
+      --border:  #2a2f38;
       --accent:  #3b82f6;
+      --accent2: #1d4ed8;
+      --text:    #e2e8f0;
+      --muted:   #64748b;
       --ok:      #22c55e;
       --warn:    #f59e0b;
       --err:     #ef4444;
-      --text:    #e2e8f0;
-      --muted:   #64748b;
-      --radius:  12px;
     }
 
     html, body {
       height: 100%;
       background: var(--bg);
       color: var(--text);
-      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
-      font-size: 15px;
-      -webkit-tap-highlight-color: transparent;
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      font-size: 14px;
       overflow: hidden;
+      -webkit-tap-highlight-color: transparent;
     }
 
-    /* ── Screens ── */
-    .screen { display: none; flex-direction: column; height: 100%; }
+    /* ── Screen switcher ── */
+    .screen { display: none; flex-direction: column; height: 100vh; overflow: hidden; }
     .screen.active { display: flex; }
 
-    /* ── Connect screen ── */
-    #screen-connect {
-      align-items: center;
-      justify-content: center;
-      padding: 32px 24px;
-      gap: 24px;
-    }
-    .connect-logo { font-size: 56px; line-height: 1; }
-    .connect-title { font-size: 22px; font-weight: 700; }
-    .connect-sub { font-size: 13px; color: var(--muted); text-align: center; line-height: 1.5; }
-    .form-group { width: 100%; max-width: 360px; display: flex; flex-direction: column; gap: 8px; }
-    .form-label { font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.8px; }
-    .form-input {
-      width: 100%;
-      padding: 14px 16px;
-      background: var(--card);
-      border: 1.5px solid var(--border);
-      border-radius: var(--radius);
-      color: var(--text);
-      font-size: 15px;
-      outline: none;
-      -webkit-appearance: none;
-    }
-    .form-input:focus { border-color: var(--accent); }
-    .btn-primary {
-      width: 100%; max-width: 360px;
-      padding: 16px;
-      background: var(--accent);
-      color: #fff;
-      border: none;
-      border-radius: var(--radius);
-      font-size: 16px;
-      font-weight: 700;
-      cursor: pointer;
-      -webkit-appearance: none;
-    }
-    .btn-primary:active { opacity: 0.85; }
-
-    /* ── Connecting screen ── */
-    #screen-connecting {
-      align-items: center;
-      justify-content: center;
-      gap: 20px;
-    }
-    .spinner {
-      width: 48px; height: 48px;
-      border: 4px solid var(--border);
-      border-top-color: var(--accent);
-      border-radius: 50%;
-      animation: spin 0.9s linear infinite;
-    }
-    @keyframes spin { to { transform: rotate(360deg); } }
-    .connecting-label { font-size: 16px; font-weight: 600; }
-    .connecting-step  { font-size: 13px; color: var(--muted); }
-    .btn-cancel {
-      margin-top: 8px;
-      padding: 10px 28px;
-      background: transparent;
-      color: var(--muted);
-      border: 1.5px solid var(--border);
-      border-radius: 8px;
-      font-size: 14px;
-      cursor: pointer;
-    }
-
-    /* ── Clips screen ── */
-    #screen-clips { overflow: hidden; }
-    .clips-header {
+    /* ══════════════════════════════════════════
+       SHARED: header  (identical to index.html)
+    ══════════════════════════════════════════ */
+    header {
       display: flex;
       align-items: center;
-      padding: 14px 16px;
+      gap: 10px;
+      padding: 12px 20px;
       background: var(--surface);
       border-bottom: 1px solid var(--border);
-      gap: 12px;
       flex-shrink: 0;
     }
-    .clips-header .hub-dot {
-      width: 10px; height: 10px;
-      border-radius: 50%;
-      background: var(--ok);
-      flex-shrink: 0;
-    }
-    .clips-header .hub-label { font-size: 14px; font-weight: 600; flex: 1; }
-    .btn-disconnect {
-      padding: 6px 14px;
-      background: transparent;
-      color: var(--muted);
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      font-size: 12px;
-      cursor: pointer;
-    }
-    .clips-list { overflow-y: auto; flex: 1; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
-    .clip-card {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      background: var(--card);
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      padding: 10px 12px;
-      cursor: pointer;
-      -webkit-tap-highlight-color: transparent;
-      transition: border-color 0.15s;
-    }
-    .clip-card:active { border-color: var(--accent); }
-    .clip-thumb {
-      width: 80px; height: 46px;
-      border-radius: 8px;
-      object-fit: cover;
-      background: var(--border);
-      flex-shrink: 0;
-    }
-    .clip-thumb-placeholder {
-      width: 80px; height: 46px;
-      border-radius: 8px;
-      background: var(--border);
+    header .logo {
+      width: 28px; height: 28px;
+      background: var(--accent);
+      border-radius: 6px;
       display: flex; align-items: center; justify-content: center;
-      font-size: 22px;
+      font-size: 16px;
+    }
+    header h1 { font-size: 16px; font-weight: 600; letter-spacing: 0.5px; }
+    header .badge {
+      margin-left: auto;
+      background: var(--border);
+      padding: 3px 10px;
+      border-radius: 12px;
+      font-size: 11px;
+      color: var(--muted);
+    }
+    header .badge.ok  { background: rgba(34,197,94,.15);  color: var(--ok); }
+    header .badge.err { background: rgba(239,68,68,.15);   color: var(--err); }
+
+    /* ══════════════════════════════════════════
+       SHARED: event list  (identical classes)
+    ══════════════════════════════════════════ */
+    .sidebar-header {
+      padding: 12px 16px;
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: var(--muted);
+      border-bottom: 1px solid var(--border);
       flex-shrink: 0;
     }
-    .clip-info { flex: 1; min-width: 0; }
-    .clip-id   { font-size: 12px; color: var(--accent); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .clip-dev  { font-size: 11px; color: var(--muted); margin-top: 2px; }
-    .clip-dur  { font-size: 13px; font-weight: 600; margin-top: 4px; }
-    .clip-date { font-size: 11px; color: var(--muted); }
-    .clips-empty { padding: 48px 24px; text-align: center; color: var(--muted); font-size: 14px; line-height: 1.6; }
-
-    /* ── Player screen ── */
-    #screen-player { background: #000; }
-    .player-topbar {
+    .event-list { overflow-y: auto; flex: 1; }
+    .event-item {
       display: flex;
       align-items: center;
       gap: 12px;
       padding: 10px 14px;
-      background: rgba(0,0,0,0.75);
-      position: absolute;
-      top: 0; left: 0; right: 0;
-      z-index: 10;
-    }
-    .btn-back {
-      padding: 6px 12px;
-      background: rgba(255,255,255,0.12);
-      color: #fff;
-      border: none;
-      border-radius: 8px;
-      font-size: 14px;
       cursor: pointer;
+      border-bottom: 1px solid var(--border);
+      transition: background 0.15s;
     }
-    .player-clip-id { font-size: 12px; color: rgba(255,255,255,0.7); flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    #player-video {
+    .event-item:hover  { background: rgba(59,130,246,0.08); }
+    .event-item.active { background: rgba(59,130,246,0.18); border-left: 3px solid var(--accent); padding-left: 11px; }
+    .thumb-wrap {
+      width: 72px; height: 42px;
+      border-radius: 5px;
+      overflow: hidden;
+      flex-shrink: 0;
+      background: var(--border);
+    }
+    .thumb-wrap img { width: 100%; height: 100%; object-fit: cover; }
+    .thumb-wrap .no-thumb {
       width: 100%; height: 100%;
-      object-fit: contain;
-      position: absolute; top: 0; left: 0;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 20px; color: var(--muted);
     }
-    .player-status {
-      position: absolute;
-      bottom: 24px; left: 50%; transform: translateX(-50%);
-      background: rgba(0,0,0,0.75);
-      padding: 8px 18px;
-      border-radius: 20px;
-      font-size: 13px;
-      color: #fff;
-      display: none;
-      white-space: nowrap;
-      z-index: 10;
+    .event-info { flex: 1; min-width: 0; }
+    .event-info .ev-id {
+      font-size: 11px; font-weight: 600;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      color: var(--accent);
+    }
+    .event-info .ev-device { font-size: 11px; color: var(--muted); margin-top: 1px; }
+    .event-info .ev-dur    { font-size: 11px; color: var(--text);  margin-top: 3px; }
+    .empty-state { padding: 40px 20px; text-align: center; color: var(--muted); font-size: 13px; line-height: 1.6; }
+    .empty-state .icon { font-size: 36px; margin-bottom: 12px; }
+
+    /* ══════════════════════════════════════════
+       SHARED: meta panel  (identical to index.html)
+    ══════════════════════════════════════════ */
+    .meta-panel {
+      background: var(--surface);
+      border-top: 1px solid var(--border);
+      padding: 14px 20px;
+      flex-shrink: 0;
+    }
+    .meta-panel.hidden { display: none; }
+    .meta-panel-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 10px;
+    }
+    .meta-panel-title {
+      font-size: 10px; font-weight: 700;
+      text-transform: uppercase; letter-spacing: 1px;
+      color: var(--muted);
+    }
+    .btn-download {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 5px 14px;
+      background: var(--accent); color: #fff;
+      border-radius: 6px; font-size: 12px; font-weight: 600;
+      text-decoration: none; transition: background 0.15s;
+    }
+    .btn-download:hover { background: var(--accent2); }
+    .btn-download.hidden { display: none; }
+    .meta-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+      gap: 10px 20px;
+    }
+    .meta-item { display: flex; flex-direction: column; gap: 2px; }
+    .meta-label { font-size: 10px; font-weight: 700; text-transform: uppercase; color: var(--muted); letter-spacing: 0.8px; }
+    .meta-value { font-size: 13px; color: var(--text); font-weight: 500; }
+    .meta-value.mono { font-family: monospace; font-size: 12px; }
+
+    /* ══════════════════════════════════════════
+       SCREEN: Connect
+    ══════════════════════════════════════════ */
+    #screen-connect .body {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 32px 24px;
+      gap: 20px;
+    }
+    .connect-sub { font-size: 13px; color: var(--muted); text-align: center; line-height: 1.6; }
+    .form-group { width: 100%; max-width: 340px; display: flex; flex-direction: column; gap: 6px; }
+    .form-label { font-size: 11px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: 0.8px; }
+    .form-input {
+      width: 100%; padding: 12px 14px;
+      background: var(--surface);
+      border: 1.5px solid var(--border);
+      border-radius: 8px;
+      color: var(--text); font-size: 14px; font-family: monospace;
+      outline: none; -webkit-appearance: none;
+    }
+    .form-input:focus { border-color: var(--accent); }
+    .btn-connect {
+      width: 100%; max-width: 340px;
+      padding: 14px;
+      background: var(--accent); color: #fff;
+      border: none; border-radius: 8px;
+      font-size: 15px; font-weight: 700;
+      cursor: pointer; -webkit-appearance: none;
+    }
+    .btn-connect:active { opacity: 0.85; }
+
+    /* ══════════════════════════════════════════
+       SCREEN: Connecting
+    ══════════════════════════════════════════ */
+    #screen-connecting .body {
+      flex: 1;
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      gap: 16px;
+    }
+    .spinner {
+      width: 40px; height: 40px;
+      border: 3px solid var(--border);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .connecting-label { font-size: 15px; font-weight: 600; }
+    .connecting-step  { font-size: 12px; color: var(--muted); }
+    .btn-cancel {
+      margin-top: 4px; padding: 8px 24px;
+      background: transparent; color: var(--muted);
+      border: 1px solid var(--border); border-radius: 8px;
+      font-size: 13px; cursor: pointer;
     }
 
-    /* ── Error banner ── */
-    #error-banner {
-      position: fixed;
-      bottom: 0; left: 0; right: 0;
-      background: var(--err);
-      color: #fff;
-      padding: 14px 20px;
-      font-size: 14px;
-      font-weight: 600;
-      text-align: center;
-      display: none;
-      z-index: 100;
+    /* ══════════════════════════════════════════
+       SCREEN: Clips  (sidebar look, full width)
+    ══════════════════════════════════════════ */
+    /* no extra styles — uses shared event-list classes */
+
+    /* ══════════════════════════════════════════
+       SCREEN: Player
+    ══════════════════════════════════════════ */
+    #screen-player { overflow-y: auto; }
+    #screen-player header .back-btn {
+      padding: 4px 10px;
+      background: var(--border);
+      border: none; border-radius: 6px;
+      color: var(--text); font-size: 13px;
+      cursor: pointer; margin-right: 2px;
     }
+    #screen-player header .clip-id-label {
+      font-size: 11px; color: var(--muted);
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      flex: 1;
+    }
+    .player-area {
+      background: #000;
+      display: flex; align-items: center; justify-content: center;
+      position: relative;
+      /* 16:9 aspect ratio */
+      aspect-ratio: 16/9;
+      width: 100%;
+      flex-shrink: 0;
+    }
+    .player-area video {
+      width: 100%; height: 100%;
+      object-fit: contain;
+    }
+    .player-placeholder {
+      display: flex; flex-direction: column;
+      align-items: center; gap: 12px;
+      color: var(--muted); font-size: 14px;
+    }
+    .player-placeholder .icon { font-size: 48px; }
+    #status-overlay {
+      position: absolute;
+      top: 10px; left: 50%; transform: translateX(-50%);
+      background: rgba(0,0,0,0.75);
+      padding: 6px 14px; border-radius: 20px;
+      font-size: 12px; color: var(--text);
+      display: none; white-space: nowrap;
+    }
+
+    /* ── Scrollbar ── */
+    ::-webkit-scrollbar { width: 5px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
   </style>
 </head>
 <body>
 
-<!-- ── Connect ─────────────────────────────────────────────────────────────── -->
+<!-- ══ CONNECT ═══════════════════════════════════════════════════════════════ -->
 <div id="screen-connect" class="screen active">
-  <div class="connect-logo">📡</div>
-  <div class="connect-title">NVR Mobile</div>
-  <div class="connect-sub">Connect to your hub over WebRTC.<br>Works on the same LAN or remotely.</div>
-  <div class="form-group">
-    <label class="form-label" for="input-hub-id">Hub ID</label>
-    <input id="input-hub-id" class="form-input" type="text"
-           value="hub-home-abc123" autocomplete="off" autocorrect="off"
-           autocapitalize="none" spellcheck="false" />
+  <header>
+    <div class="logo">📹</div>
+    <h1>NVR Mobile</h1>
+    <span class="badge" id="connect-badge">Disconnected</span>
+  </header>
+  <div class="body">
+    <div class="connect-sub">Connect to your hub over WebRTC.<br>Works on the same LAN or remotely.</div>
+    <div class="form-group">
+      <label class="form-label" for="input-hub-id">Hub ID</label>
+      <input id="input-hub-id" class="form-input" type="text"
+             value="hub-home-abc123"
+             autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" />
+    </div>
+    <button id="btn-connect" class="btn-connect">Connect</button>
   </div>
-  <button id="btn-connect" class="btn-primary">Connect</button>
 </div>
 
-<!-- ── Connecting ──────────────────────────────────────────────────────────── -->
+<!-- ══ CONNECTING ════════════════════════════════════════════════════════════ -->
 <div id="screen-connecting" class="screen">
-  <div class="spinner"></div>
-  <div class="connecting-label">Connecting…</div>
-  <div id="connecting-step" class="connecting-step">Starting MQTT signaling</div>
-  <button id="btn-cancel" class="btn-cancel">Cancel</button>
+  <header>
+    <div class="logo">📹</div>
+    <h1>NVR Mobile</h1>
+    <span class="badge" id="connecting-badge">Connecting…</span>
+  </header>
+  <div class="body">
+    <div class="spinner"></div>
+    <div class="connecting-label">Establishing connection</div>
+    <div id="connecting-step" class="connecting-step">Starting MQTT signaling…</div>
+    <button id="btn-cancel" class="btn-cancel">Cancel</button>
+  </div>
 </div>
 
-<!-- ── Clips ───────────────────────────────────────────────────────────────── -->
+<!-- ══ CLIPS ═════════════════════════════════════════════════════════════════ -->
 <div id="screen-clips" class="screen">
-  <div class="clips-header">
-    <div class="hub-dot"></div>
-    <span id="clips-hub-label" class="hub-label">hub-home-abc123</span>
-    <button id="btn-disconnect" class="btn-disconnect">Disconnect</button>
+  <header>
+    <div class="logo">📹</div>
+    <h1>NVR Mobile</h1>
+    <span class="badge ok" id="event-count">0 events</span>
+  </header>
+  <div class="sidebar-header" style="display:flex;align-items:center;justify-content:space-between;">
+    <span>Recorded Events</span>
+    <button id="btn-disconnect" style="background:transparent;border:none;color:var(--muted);font-size:11px;cursor:pointer;padding:2px 6px;">Disconnect</button>
   </div>
-  <div class="clips-list" id="clips-list">
-    <div class="clips-empty">Loading clips…</div>
+  <div class="event-list" id="event-list">
+    <div class="empty-state"><div class="icon">⏳</div>Loading events…</div>
   </div>
 </div>
 
-<!-- ── Player ──────────────────────────────────────────────────────────────── -->
-<div id="screen-player" class="screen" style="position:relative;">
-  <div class="player-topbar">
-    <button id="btn-back" class="btn-back">← Back</button>
-    <span id="player-clip-id" class="player-clip-id"></span>
-  </div>
-  <video id="player-video" playsinline autoplay></video>
-  <div id="player-status" class="player-status"></div>
-</div>
+<!-- ══ PLAYER ════════════════════════════════════════════════════════════════ -->
+<div id="screen-player" class="screen">
+  <header>
+    <button id="btn-back" class="back-btn">← Back</button>
+    <div class="logo">📹</div>
+    <span id="player-clip-id" class="clip-id-label"></span>
+  </header>
 
-<!-- ── Error banner ────────────────────────────────────────────────────────── -->
-<div id="error-banner"></div>
+  <div class="player-area">
+    <div class="player-placeholder" id="placeholder">
+      <div class="icon">▶️</div>
+      <span>Loading…</span>
+    </div>
+    <video id="player-video" controls playsinline style="display:none"></video>
+    <div id="status-overlay"></div>
+  </div>
+
+  <div class="meta-panel hidden" id="meta-panel">
+    <div class="meta-panel-header">
+      <span class="meta-panel-title">Clip Details</span>
+    </div>
+    <div class="meta-grid" id="meta-grid"></div>
+  </div>
+</div>
 
 <script>
 'use strict';
 
-// ── Utilities ─────────────────────────────────────────────────────────────────
-
+// ── Utilities ──────────────────────────────────────────────────────────────────
 function uuid() {
-  return crypto.randomUUID ? crypto.randomUUID()
-    : ([1e7]+-1e3+-4e3+-8e3+-1e11).replace(/[018]/g, c =>
-        (c ^ crypto.getRandomValues(new Uint8Array(1))[0] & 15 >> c / 4).toString(16));
+  return crypto.randomUUID
+    ? crypto.randomUUID()
+    : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+        const r = crypto.getRandomValues(new Uint8Array(1))[0] & 15;
+        return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
+      });
 }
-
 function fmt(sec) {
-  const m = Math.floor(sec / 60);
-  const s = Math.floor(sec % 60);
+  const m = Math.floor(sec / 60), s = Math.floor(sec % 60);
   return `${m}:${String(s).padStart(2, '0')}`;
 }
 
-// ── Screen navigation ─────────────────────────────────────────────────────────
-
-const screens = {
-  connect:    document.getElementById('screen-connect'),
-  connecting: document.getElementById('screen-connecting'),
-  clips:      document.getElementById('screen-clips'),
-  player:     document.getElementById('screen-player'),
-};
-
+// ── Screen navigation ──────────────────────────────────────────────────────────
+const SCREENS = ['connect','connecting','clips','player'];
 function showScreen(name) {
-  Object.values(screens).forEach(s => s.classList.remove('active'));
-  screens[name].classList.add('active');
+  SCREENS.forEach(id => {
+    document.getElementById(`screen-${id}`).classList.toggle('active', id === name);
+  });
 }
 
-// ── Error display ─────────────────────────────────────────────────────────────
-
-const errorBanner = document.getElementById('error-banner');
-let errorTimer;
-
-function showError(msg, durationMs = 5000) {
-  errorBanner.textContent = msg;
-  errorBanner.style.display = 'block';
-  clearTimeout(errorTimer);
-  errorTimer = setTimeout(() => { errorBanner.style.display = 'none'; }, durationMs);
+// ── Status overlay (player screen) ────────────────────────────────────────────
+const statusEl = document.getElementById('status-overlay');
+function showStatus(msg, dur = 3000) {
+  statusEl.textContent = msg;
+  statusEl.style.display = 'block';
+  clearTimeout(showStatus._t);
+  if (dur) showStatus._t = setTimeout(() => { statusEl.style.display = 'none'; }, dur);
 }
+function hideStatus() { statusEl.style.display = 'none'; }
 
-// ── Connection state ──────────────────────────────────────────────────────────
-
-let mqttClient   = null;
-let peerConn     = null;
-let dataChannel  = null;
-let sessionId    = null;
+// ── Connection state ───────────────────────────────────────────────────────────
+let mqttClient  = null;
+let peerConn    = null;
+let dataChannel = null;
+let sessionId   = null;
 let currentHubId = null;
-let clipList     = [];
-
-// Segment reassembly state
-let pending = null; // { clip_id, segment_index, total, received, chunks: [] }
-
-// ── Step label ────────────────────────────────────────────────────────────────
-
-const stepEl = document.getElementById('connecting-step');
-function setStep(msg) { stepEl.textContent = msg; }
-
-// ── MQTT broker ───────────────────────────────────────────────────────────────
+let pending     = null; // segment reassembly
 
 const MQTT_BROKER = 'wss://broker.hivemq.com:8884/mqtt';
-
-// ── ICE servers ───────────────────────────────────────────────────────────────
-
 const ICE_SERVERS = [
   { urls: 'stun:stun.l.google.com:19302' },
   { urls: 'stun:stun1.l.google.com:19302' },
 ];
 
-// ── Connect flow ──────────────────────────────────────────────────────────────
+// ── Connecting step label ──────────────────────────────────────────────────────
+function setStep(msg) { document.getElementById('connecting-step').textContent = msg; }
 
-const CONNECT_TIMEOUT_MS = 15000;
+// ── Connect ────────────────────────────────────────────────────────────────────
 let connectTimer = null;
-
 function startConnectTimeout() {
   connectTimer = setTimeout(() => {
-    teardown();
-    showScreen('connect');
-    showError('Connection timed out. Is the hub running?', 8000);
-  }, CONNECT_TIMEOUT_MS);
+    teardown(); showScreen('connect');
+    alert('Connection timed out. Is the hub running?');
+  }, 15000);
 }
-
-function clearConnectTimeout() {
-  clearTimeout(connectTimer);
-  connectTimer = null;
-}
+function clearConnectTimeout() { clearTimeout(connectTimer); connectTimer = null; }
 
 function connect(hubId) {
   currentHubId = hubId;
@@ -373,30 +424,26 @@ function connect(hubId) {
   const iceReplyTopic = `nvr/hub/${hubId}/ice/reply`;
 
   mqttClient = mqtt.connect(MQTT_BROKER, {
-    clientId:      `nvr-mobile-${Math.random().toString(16).slice(2, 10)}`,
+    clientId: `nvr-mobile-${Math.random().toString(16).slice(2, 10)}`,
     connectTimeout: 10000,
-    reconnectPeriod: 0, // no auto-reconnect — we handle it manually
+    reconnectPeriod: 0,
   });
 
   mqttClient.on('connect', () => {
-    setStep('MQTT connected — subscribing…');
-    mqttClient.subscribe([answerTopic, iceReplyTopic], (err) => {
-      if (err) { showError('MQTT subscribe failed'); teardown(); showScreen('connect'); return; }
-      setStep('Subscribed — creating WebRTC offer…');
-      createOffer(hubId, offerTopic, iceTopic, answerTopic, iceReplyTopic);
+    setStep('Connected — subscribing…');
+    mqttClient.subscribe([answerTopic, iceReplyTopic], err => {
+      if (err) { teardown(); showScreen('connect'); return; }
+      setStep('Creating WebRTC offer…');
+      createOffer(hubId, offerTopic, iceTopic);
     });
   });
 
-  mqttClient.on('error', (err) => {
-    showError(`MQTT error: ${err.message}`);
-    teardown();
-    showScreen('connect');
-  });
+  mqttClient.on('error', err => { teardown(); showScreen('connect'); });
 
   mqttClient.on('message', (topic, payload) => {
     let msg;
     try { msg = JSON.parse(payload.toString()); } catch { return; }
-    if (msg.session_id && msg.session_id !== sessionId) return; // stale session
+    if (msg.session_id && msg.session_id !== sessionId) return;
 
     if (topic === answerTopic && msg.type === 'answer') {
       peerConn.setRemoteDescription({ type: 'answer', sdp: msg.sdp });
@@ -410,39 +457,31 @@ function connect(hubId) {
   });
 }
 
-// ── WebRTC ────────────────────────────────────────────────────────────────────
-
-function createOffer(hubId, offerTopic, iceTopic, answerTopic, iceReplyTopic) {
+function createOffer(hubId, offerTopic, iceTopic) {
   peerConn = new RTCPeerConnection({ iceServers: ICE_SERVERS });
 
-  // DataChannel must be created by the offerer (browser)
   dataChannel = peerConn.createDataChannel('clip-stream', { ordered: true });
-  dataChannel.binaryType = 'arraybuffer'; // required for iOS Safari
+  dataChannel.binaryType = 'arraybuffer';
 
   dataChannel.onopen = () => {
     clearConnectTimeout();
-    setStep('DataChannel open!');
-    document.getElementById('clips-hub-label').textContent = hubId;
+    document.getElementById('event-count').textContent = 'Connected';
     showScreen('clips');
     requestClips();
   };
 
   dataChannel.onclose = () => {
-    if (screens.clips.classList.contains('active') || screens.player.classList.contains('active')) {
-      showError('Hub disconnected');
-      teardown();
-      showScreen('connect');
+    if (['clips','player'].some(s => document.getElementById(`screen-${s}`).classList.contains('active'))) {
+      teardown(); showScreen('connect');
     }
   };
 
-  dataChannel.onmessage = handleDataChannelMessage;
+  dataChannel.onmessage = handleDCMessage;
 
-  peerConn.onicecandidate = (e) => {
+  peerConn.onicecandidate = e => {
     if (!e.candidate) return;
     mqttClient.publish(iceTopic, JSON.stringify({
-      candidate: e.candidate.candidate,
-      sdpMid:    e.candidate.sdpMid,
-      session_id: sessionId,
+      candidate: e.candidate.candidate, sdpMid: e.candidate.sdpMid, session_id: sessionId,
     }));
   };
 
@@ -450,128 +489,104 @@ function createOffer(hubId, offerTopic, iceTopic, answerTopic, iceReplyTopic) {
     const s = peerConn.iceConnectionState;
     setStep(`ICE: ${s}`);
     if (s === 'failed') {
-      showError('ICE connection failed. Try adding TURN credentials.');
-      teardown();
-      showScreen('connect');
+      teardown(); showScreen('connect');
+      alert('ICE connection failed. Add TURN credentials for remote access.');
     }
   };
 
-  peerConn.createOffer().then(offer => {
-    return peerConn.setLocalDescription(offer);
-  }).then(() => {
-    mqttClient.publish(offerTopic, JSON.stringify({
-      type:       peerConn.localDescription.type,
-      sdp:        peerConn.localDescription.sdp,
-      session_id: sessionId,
-    }));
-    setStep('Offer sent — waiting for hub…');
-  }).catch(err => {
-    showError(`WebRTC offer failed: ${err.message}`);
-    teardown();
-    showScreen('connect');
-  });
+  peerConn.createOffer()
+    .then(o => peerConn.setLocalDescription(o))
+    .then(() => {
+      mqttClient.publish(offerTopic, JSON.stringify({
+        type: peerConn.localDescription.type,
+        sdp:  peerConn.localDescription.sdp,
+        session_id: sessionId,
+      }));
+      setStep('Offer sent — waiting for hub…');
+    })
+    .catch(() => { teardown(); showScreen('connect'); });
 }
 
-// ── DataChannel messages ──────────────────────────────────────────────────────
+// ── Teardown ───────────────────────────────────────────────────────────────────
+function teardown() {
+  clearConnectTimeout();
+  stopPlayback();
+  if (dataChannel) { try { dataChannel.close(); } catch {} dataChannel = null; }
+  if (peerConn)    { try { peerConn.close();    } catch {} peerConn    = null; }
+  if (mqttClient)  { mqttClient.end(true);                  mqttClient  = null; }
+  sessionId = null; currentHubId = null; pending = null;
+}
 
+// ── DataChannel messaging ──────────────────────────────────────────────────────
 function dcSend(obj) {
-  if (dataChannel && dataChannel.readyState === 'open') {
-    dataChannel.send(JSON.stringify(obj));
-  }
+  if (dataChannel && dataChannel.readyState === 'open') dataChannel.send(JSON.stringify(obj));
 }
+function requestClips() { dcSend({ type: 'get_clips' }); }
 
-function requestClips() {
-  dcSend({ type: 'get_clips' });
-}
-
-function handleDataChannelMessage(event) {
+function handleDCMessage(event) {
   if (event.data instanceof ArrayBuffer) {
-    // Binary chunk — append to pending segment
     if (!pending) return;
     pending.chunks.push(new Uint8Array(event.data));
     pending.received += event.data.byteLength;
     return;
   }
-
-  // Text JSON control message
   let msg;
   try { msg = JSON.parse(event.data); } catch { return; }
 
-  if (msg.type === 'clips') {
-    renderClips(msg.data);
-    return;
-  }
-
-  if (msg.type === 'segment_header') {
-    pending = {
-      clip_id:       msg.clip_id,
-      segment_index: msg.segment_index,
-      total:         msg.size_bytes,
-      received:      0,
-      chunks:        [],
-    };
-    return;
-  }
-
-  if (msg.type === 'segment_end') {
-    if (!pending) return;
-    // Assemble full segment
-    const full = new Uint8Array(pending.total);
-    let offset = 0;
-    for (const chunk of pending.chunks) { full.set(chunk, offset); offset += chunk.length; }
-    const p = pending;
-    pending = null;
-    onSegmentReady(p.clip_id, p.segment_index, full);
-    return;
-  }
-
-  if (msg.type === 'error') {
-    showError(`Hub error: ${msg.message}`);
-    setPlayerStatus('');
-    return;
-  }
+  if (msg.type === 'clips')          { renderClips(msg.data);                                        return; }
+  if (msg.type === 'segment_header') { pending = { clip_id: msg.clip_id, segment_index: msg.segment_index, total: msg.size_bytes, received: 0, chunks: [] }; return; }
+  if (msg.type === 'segment_end')    { if (!pending) return; const p = pending; pending = null; assembleSegment(p); return; }
+  if (msg.type === 'error')          { showStatus(`Hub: ${msg.message}`, 5000); return; }
 }
 
-// ── Clip list UI ──────────────────────────────────────────────────────────────
-
+// ── Clip list ─────────────────────────────────────────────────────────────────
 function renderClips(list) {
-  clipList = list || [];
-  const container = document.getElementById('clips-list');
+  const el = document.getElementById('event-list');
+  const badge = document.getElementById('event-count');
 
-  if (!clipList.length) {
-    container.innerHTML = '<div class="clips-empty">No clips found on hub.</div>';
+  if (!list || !list.length) {
+    el.innerHTML = '<div class="empty-state"><div class="icon">📭</div>No events found on hub.</div>';
+    badge.textContent = '0 events';
     return;
   }
 
-  container.innerHTML = '';
-  clipList.forEach(meta => {
-    const c = meta.clip;
-    const card = document.createElement('div');
-    card.className = 'clip-card';
+  badge.textContent = `${list.length} event${list.length !== 1 ? 's' : ''}`;
+  el.innerHTML = '';
 
-    const thumbSrc = meta._urls && meta._urls.thumbnail;
-    const thumbHtml = thumbSrc
-      ? `<img class="clip-thumb" src="http://${location.hostname}:3000${thumbSrc}" loading="lazy" onerror="this.parentElement.innerHTML='<div class=clip-thumb-placeholder>🎬</div>'">`
-      : `<div class="clip-thumb-placeholder">🎬</div>`;
+  list.forEach(meta => {
+    const c   = meta.clip;
+    const item = document.createElement('div');
+    item.className = 'event-item';
+
+    const thumbHtml = meta._urls && meta._urls.thumbnail
+      ? `<img src="${meta._urls.thumbnail}" alt="thumb" loading="lazy" onerror="this.parentElement.innerHTML='<div class=no-thumb>🎬</div>'">`
+      : `<div class="no-thumb">🎬</div>`;
 
     const date = new Date(c.created_at).toLocaleDateString();
     const time = new Date(c.created_at).toLocaleTimeString();
 
-    card.innerHTML = `
-      ${thumbHtml}
-      <div class="clip-info">
-        <div class="clip-id">${c.id}</div>
-        <div class="clip-dev">📷 ${c.device_id}</div>
-        <div class="clip-dur">${fmt(c.duration_seconds)}</div>
-        <div class="clip-date">${date} ${time}</div>
-      </div>
-    `;
-    card.addEventListener('click', () => playClip(meta));
-    container.appendChild(card);
+    item.innerHTML = `
+      <div class="thumb-wrap">${thumbHtml}</div>
+      <div class="event-info">
+        <div class="ev-id">${c.id}</div>
+        <div class="ev-device">📷 ${c.device_id}</div>
+        <div class="ev-dur">${fmt(c.duration_seconds)} &nbsp;·&nbsp; ${date} ${time}</div>
+      </div>`;
+
+    item.addEventListener('click', () => {
+      document.querySelectorAll('.event-item').forEach(e => e.classList.remove('active'));
+      item.classList.add('active');
+      playClip(meta);
+    });
+    el.appendChild(item);
   });
 }
 
 // ── Playback (MSE + mux.js) ───────────────────────────────────────────────────
+const videoEl   = document.getElementById('player-video');
+const metaPanel = document.getElementById('meta-panel');
+const metaGrid  = document.getElementById('meta-grid');
+const placeholder = document.getElementById('placeholder');
 
 let mediaSource  = null;
 let sourceBuffer = null;
@@ -580,60 +595,50 @@ let playingMeta  = null;
 let nextSegment  = 0;
 let segmentCount = 0;
 let sourceQueue  = [];
-let sbUpdating   = false;
+let sbBusy       = false;
 
-const videoEl = document.getElementById('player-video');
-const statusEl = document.getElementById('player-status');
-
-function setPlayerStatus(msg) {
-  if (!msg) { statusEl.style.display = 'none'; return; }
-  statusEl.textContent = msg;
-  statusEl.style.display = 'block';
+function stopPlayback() {
+  playingMeta = null;
+  if (transmuxer)  { try { transmuxer.dispose(); } catch {} transmuxer  = null; }
+  if (mediaSource && mediaSource.readyState === 'open') { try { mediaSource.endOfStream(); } catch {} }
+  if (videoEl.src) { URL.revokeObjectURL(videoEl.src); videoEl.removeAttribute('src'); videoEl.load(); }
+  mediaSource = null; sourceBuffer = null; sourceQueue = []; sbBusy = false;
 }
 
 function playClip(meta) {
+  stopPlayback();
   playingMeta  = meta;
   nextSegment  = 0;
   segmentCount = meta.clip.segment_count;
-  sourceQueue  = [];
-  sbUpdating   = false;
 
   document.getElementById('player-clip-id').textContent = meta.clip.id;
   showScreen('player');
-  setPlayerStatus('Buffering…');
-
-  // Teardown previous MSE session
-  if (transmuxer) { try { transmuxer.dispose(); } catch {} transmuxer = null; }
-  if (mediaSource) { try { URL.revokeObjectURL(videoEl.src); } catch {} mediaSource = null; sourceBuffer = null; }
-
-  videoEl.removeAttribute('src');
-  videoEl.load();
+  placeholder.style.display = 'flex';
+  videoEl.style.display = 'none';
+  showStatus('Buffering…', 0);
+  renderMeta(meta);
 
   mediaSource = new MediaSource();
   videoEl.src = URL.createObjectURL(mediaSource);
 
   mediaSource.addEventListener('sourceopen', () => {
-    // Use MP4 container — works on both Chrome (MPEG-TS MSE) and Safari (requires fMP4 via mux.js)
-    const mimeType = 'video/mp4; codecs="avc1.42E01E, mp4a.40.2"';
-    if (!MediaSource.isTypeSupported(mimeType)) {
-      showError('MSE codec not supported on this browser');
-      return;
-    }
-    sourceBuffer = mediaSource.addSourceBuffer(mimeType);
+    const mime = 'video/mp4; codecs="avc1.42E01E, mp4a.40.2"';
+    if (!MediaSource.isTypeSupported(mime)) { showStatus('Codec not supported', 5000); return; }
+
+    sourceBuffer = mediaSource.addSourceBuffer(mime);
     sourceBuffer.addEventListener('updateend', drainQueue);
 
     transmuxer = new muxjs.mp4.Transmuxer();
-    transmuxer.on('data', (segment) => {
-      // mux.js emits init segment + media segments
-      let combined;
-      if (segment.initSegment && segment.initSegment.byteLength > 0) {
-        combined = new Uint8Array(segment.initSegment.byteLength + segment.data.byteLength);
-        combined.set(segment.initSegment, 0);
-        combined.set(new Uint8Array(segment.data), segment.initSegment.byteLength);
+    transmuxer.on('data', seg => {
+      let buf;
+      if (seg.initSegment && seg.initSegment.byteLength > 0) {
+        buf = new Uint8Array(seg.initSegment.byteLength + seg.data.byteLength);
+        buf.set(seg.initSegment, 0);
+        buf.set(new Uint8Array(seg.data), seg.initSegment.byteLength);
       } else {
-        combined = new Uint8Array(segment.data);
+        buf = new Uint8Array(seg.data);
       }
-      sourceQueue.push(combined.buffer);
+      sourceQueue.push(buf.buffer);
       drainQueue();
     });
 
@@ -642,28 +647,20 @@ function playClip(meta) {
 
   videoEl.ontimeupdate = () => {
     if (!playingMeta) return;
-    const segDur = playingMeta.clip.segment_duration_seconds;
-    const ahead  = Math.floor(videoEl.currentTime / segDur) + 2; // prefetch 1 ahead
-    if (ahead > nextSegment && nextSegment < segmentCount) {
-      fetchSegment(nextSegment);
-    }
+    const ahead = Math.floor(videoEl.currentTime / playingMeta.clip.segment_duration_seconds) + 2;
+    if (ahead > nextSegment && nextSegment < segmentCount) fetchSegment(nextSegment);
   };
 }
 
 function drainQueue() {
-  if (sbUpdating || !sourceBuffer || sourceBuffer.updating || !sourceQueue.length) return;
-  sbUpdating = true;
+  if (sbBusy || !sourceBuffer || sourceBuffer.updating || !sourceQueue.length) return;
+  sbBusy = true;
   const chunk = sourceQueue.shift();
-  try {
-    sourceBuffer.appendBuffer(chunk);
-  } catch (e) {
-    sbUpdating = false;
-    showError(`Buffer error: ${e.message}`);
-  }
+  try { sourceBuffer.appendBuffer(chunk); } catch (e) { sbBusy = false; }
   sourceBuffer.addEventListener('updateend', () => {
-    sbUpdating = false;
+    sbBusy = false;
     if (sourceQueue.length) drainQueue();
-    else if (nextSegment >= segmentCount && mediaSource.readyState === 'open') {
+    else if (nextSegment >= segmentCount && mediaSource && mediaSource.readyState === 'open') {
       try { mediaSource.endOfStream(); } catch {}
     }
   }, { once: true });
@@ -672,79 +669,73 @@ function drainQueue() {
 function fetchSegment(index) {
   if (index >= segmentCount) return;
   nextSegment = index + 1;
-  setPlayerStatus(`Loading segment ${index + 1} / ${segmentCount}…`);
+  showStatus(`Loading segment ${index + 1} / ${segmentCount}…`, 0);
   dcSend({ type: 'get_segment', clip_id: playingMeta.clip.id, segment_index: index });
 }
 
-function onSegmentReady(clipId, segmentIndex, tsBytes) {
-  if (!playingMeta || playingMeta.clip.id !== clipId) return;
-  setPlayerStatus('');
+function assembleSegment(p) {
+  if (!playingMeta || playingMeta.clip.id !== p.clip_id) return;
+  const full = new Uint8Array(p.total);
+  let off = 0;
+  for (const c of p.chunks) { full.set(c, off); off += c.length; }
 
-  // Push into mux.js transmuxer; it will call the 'data' handler above
-  transmuxer.push(tsBytes);
+  placeholder.style.display = 'none';
+  videoEl.style.display = 'block';
+  hideStatus();
+
+  transmuxer.push(full);
   transmuxer.flush();
 
-  // Prefetch next segment when near the end
-  const segDur = playingMeta.clip.segment_duration_seconds;
-  const ahead  = Math.floor(videoEl.currentTime / segDur) + 2;
-  if (ahead > nextSegment && nextSegment < segmentCount) {
-    fetchSegment(nextSegment);
-  }
+  videoEl.play().catch(() => {});
+
+  const ahead = Math.floor(videoEl.currentTime / playingMeta.clip.segment_duration_seconds) + 2;
+  if (ahead > nextSegment && nextSegment < segmentCount) fetchSegment(nextSegment);
 }
 
-// ── Teardown ──────────────────────────────────────────────────────────────────
-
-function teardown() {
-  clearConnectTimeout();
-
-  playingMeta = null;
-  if (transmuxer) { try { transmuxer.dispose(); } catch {} transmuxer = null; }
-  if (mediaSource && mediaSource.readyState === 'open') {
-    try { mediaSource.endOfStream(); } catch {}
-  }
-  if (videoEl.src) { URL.revokeObjectURL(videoEl.src); videoEl.removeAttribute('src'); videoEl.load(); }
-  mediaSource  = null;
-  sourceBuffer = null;
-
-  if (dataChannel) { try { dataChannel.close(); } catch {} dataChannel = null; }
-  if (peerConn)    { try { peerConn.close();    } catch {} peerConn    = null; }
-  if (mqttClient)  { mqttClient.end(true);                  mqttClient  = null; }
-
-  sessionId    = null;
-  currentHubId = null;
-  clipList     = [];
+// ── Meta panel (same fields as index.html) ────────────────────────────────────
+function renderMeta(meta) {
+  const c = meta.clip, v = meta.video, s = meta.storage;
+  const fields = [
+    { label: 'Event ID',    value: c.id,                                          cls: 'mono' },
+    { label: 'Device',      value: c.device_id },
+    { label: 'Created',     value: new Date(c.created_at).toLocaleString() },
+    { label: 'Duration',    value: fmt(c.duration_seconds) },
+    { label: 'Resolution',  value: `${v.resolution_width} × ${v.resolution_height}` },
+    { label: 'FPS',         value: v.fps },
+    { label: 'Video Codec', value: v.codec.toUpperCase() },
+    { label: 'Audio Codec', value: v.audio_codec.toUpperCase() },
+    { label: 'Bitrate',     value: `${v.bitrate_kbps} kbps` },
+    { label: 'Segments',    value: `${c.segment_count} × ${c.segment_duration_seconds}s` },
+    { label: 'Size',        value: `${(s.total_size_bytes / 1024 / 1024).toFixed(2)} MB` },
+    { label: 'Trigger',     value: meta.trigger.type + ' / ' + meta.trigger.label },
+  ];
+  metaGrid.innerHTML = fields.map(f => `
+    <div class="meta-item">
+      <span class="meta-label">${f.label}</span>
+      <span class="meta-value ${f.cls || ''}">${f.value}</span>
+    </div>`).join('');
+  metaPanel.classList.remove('hidden');
 }
 
-// ── Button handlers ───────────────────────────────────────────────────────────
-
+// ── Button wiring ──────────────────────────────────────────────────────────────
 document.getElementById('btn-connect').addEventListener('click', () => {
   const hubId = document.getElementById('input-hub-id').value.trim();
-  if (!hubId) { showError('Enter a Hub ID'); return; }
+  if (!hubId) return;
   connect(hubId);
 });
-
-document.getElementById('input-hub-id').addEventListener('keydown', (e) => {
+document.getElementById('input-hub-id').addEventListener('keydown', e => {
   if (e.key === 'Enter') document.getElementById('btn-connect').click();
 });
-
 document.getElementById('btn-cancel').addEventListener('click', () => {
-  teardown();
-  showScreen('connect');
+  teardown(); showScreen('connect');
 });
-
 document.getElementById('btn-disconnect').addEventListener('click', () => {
-  teardown();
-  showScreen('connect');
+  teardown(); showScreen('connect');
 });
-
 document.getElementById('btn-back').addEventListener('click', () => {
+  stopPlayback();
+  metaPanel.classList.add('hidden');
   showScreen('clips');
-  setPlayerStatus('');
-  // Keep dataChannel alive — only stop MSE
-  if (transmuxer)  { try { transmuxer.dispose();    } catch {} transmuxer  = null; }
-  if (mediaSource && mediaSource.readyState === 'open') { try { mediaSource.endOfStream(); } catch {} }
-  if (videoEl.src) { URL.revokeObjectURL(videoEl.src); videoEl.removeAttribute('src'); videoEl.load(); }
-  mediaSource = null; sourceBuffer = null; playingMeta = null;
 });
 </script>
 </body>
