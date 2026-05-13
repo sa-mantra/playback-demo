@@ -1,0 +1,751 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0" />
+  <title>NVR Mobile</title>
+  <!-- MQTT.js for WebRTC signaling -->
+  <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+  <!-- mux.js for MPEG-TS → fMP4 transmuxing (iOS Safari MSE compat) -->
+  <script src="https://cdn.jsdelivr.net/npm/mux.js/dist/mux.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:      #0a0c10;
+      --surface: #13171e;
+      --card:    #1a1f29;
+      --border:  #252c38;
+      --accent:  #3b82f6;
+      --ok:      #22c55e;
+      --warn:    #f59e0b;
+      --err:     #ef4444;
+      --text:    #e2e8f0;
+      --muted:   #64748b;
+      --radius:  12px;
+    }
+
+    html, body {
+      height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      font-size: 15px;
+      -webkit-tap-highlight-color: transparent;
+      overflow: hidden;
+    }
+
+    /* ── Screens ── */
+    .screen { display: none; flex-direction: column; height: 100%; }
+    .screen.active { display: flex; }
+
+    /* ── Connect screen ── */
+    #screen-connect {
+      align-items: center;
+      justify-content: center;
+      padding: 32px 24px;
+      gap: 24px;
+    }
+    .connect-logo { font-size: 56px; line-height: 1; }
+    .connect-title { font-size: 22px; font-weight: 700; }
+    .connect-sub { font-size: 13px; color: var(--muted); text-align: center; line-height: 1.5; }
+    .form-group { width: 100%; max-width: 360px; display: flex; flex-direction: column; gap: 8px; }
+    .form-label { font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.8px; }
+    .form-input {
+      width: 100%;
+      padding: 14px 16px;
+      background: var(--card);
+      border: 1.5px solid var(--border);
+      border-radius: var(--radius);
+      color: var(--text);
+      font-size: 15px;
+      outline: none;
+      -webkit-appearance: none;
+    }
+    .form-input:focus { border-color: var(--accent); }
+    .btn-primary {
+      width: 100%; max-width: 360px;
+      padding: 16px;
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: var(--radius);
+      font-size: 16px;
+      font-weight: 700;
+      cursor: pointer;
+      -webkit-appearance: none;
+    }
+    .btn-primary:active { opacity: 0.85; }
+
+    /* ── Connecting screen ── */
+    #screen-connecting {
+      align-items: center;
+      justify-content: center;
+      gap: 20px;
+    }
+    .spinner {
+      width: 48px; height: 48px;
+      border: 4px solid var(--border);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 0.9s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .connecting-label { font-size: 16px; font-weight: 600; }
+    .connecting-step  { font-size: 13px; color: var(--muted); }
+    .btn-cancel {
+      margin-top: 8px;
+      padding: 10px 28px;
+      background: transparent;
+      color: var(--muted);
+      border: 1.5px solid var(--border);
+      border-radius: 8px;
+      font-size: 14px;
+      cursor: pointer;
+    }
+
+    /* ── Clips screen ── */
+    #screen-clips { overflow: hidden; }
+    .clips-header {
+      display: flex;
+      align-items: center;
+      padding: 14px 16px;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      gap: 12px;
+      flex-shrink: 0;
+    }
+    .clips-header .hub-dot {
+      width: 10px; height: 10px;
+      border-radius: 50%;
+      background: var(--ok);
+      flex-shrink: 0;
+    }
+    .clips-header .hub-label { font-size: 14px; font-weight: 600; flex: 1; }
+    .btn-disconnect {
+      padding: 6px 14px;
+      background: transparent;
+      color: var(--muted);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    .clips-list { overflow-y: auto; flex: 1; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+    .clip-card {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 10px 12px;
+      cursor: pointer;
+      -webkit-tap-highlight-color: transparent;
+      transition: border-color 0.15s;
+    }
+    .clip-card:active { border-color: var(--accent); }
+    .clip-thumb {
+      width: 80px; height: 46px;
+      border-radius: 8px;
+      object-fit: cover;
+      background: var(--border);
+      flex-shrink: 0;
+    }
+    .clip-thumb-placeholder {
+      width: 80px; height: 46px;
+      border-radius: 8px;
+      background: var(--border);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 22px;
+      flex-shrink: 0;
+    }
+    .clip-info { flex: 1; min-width: 0; }
+    .clip-id   { font-size: 12px; color: var(--accent); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .clip-dev  { font-size: 11px; color: var(--muted); margin-top: 2px; }
+    .clip-dur  { font-size: 13px; font-weight: 600; margin-top: 4px; }
+    .clip-date { font-size: 11px; color: var(--muted); }
+    .clips-empty { padding: 48px 24px; text-align: center; color: var(--muted); font-size: 14px; line-height: 1.6; }
+
+    /* ── Player screen ── */
+    #screen-player { background: #000; }
+    .player-topbar {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 10px 14px;
+      background: rgba(0,0,0,0.75);
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      z-index: 10;
+    }
+    .btn-back {
+      padding: 6px 12px;
+      background: rgba(255,255,255,0.12);
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      font-size: 14px;
+      cursor: pointer;
+    }
+    .player-clip-id { font-size: 12px; color: rgba(255,255,255,0.7); flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    #player-video {
+      width: 100%; height: 100%;
+      object-fit: contain;
+      position: absolute; top: 0; left: 0;
+    }
+    .player-status {
+      position: absolute;
+      bottom: 24px; left: 50%; transform: translateX(-50%);
+      background: rgba(0,0,0,0.75);
+      padding: 8px 18px;
+      border-radius: 20px;
+      font-size: 13px;
+      color: #fff;
+      display: none;
+      white-space: nowrap;
+      z-index: 10;
+    }
+
+    /* ── Error banner ── */
+    #error-banner {
+      position: fixed;
+      bottom: 0; left: 0; right: 0;
+      background: var(--err);
+      color: #fff;
+      padding: 14px 20px;
+      font-size: 14px;
+      font-weight: 600;
+      text-align: center;
+      display: none;
+      z-index: 100;
+    }
+  </style>
+</head>
+<body>
+
+<!-- ── Connect ─────────────────────────────────────────────────────────────── -->
+<div id="screen-connect" class="screen active">
+  <div class="connect-logo">📡</div>
+  <div class="connect-title">NVR Mobile</div>
+  <div class="connect-sub">Connect to your hub over WebRTC.<br>Works on the same LAN or remotely.</div>
+  <div class="form-group">
+    <label class="form-label" for="input-hub-id">Hub ID</label>
+    <input id="input-hub-id" class="form-input" type="text"
+           value="hub-home-abc123" autocomplete="off" autocorrect="off"
+           autocapitalize="none" spellcheck="false" />
+  </div>
+  <button id="btn-connect" class="btn-primary">Connect</button>
+</div>
+
+<!-- ── Connecting ──────────────────────────────────────────────────────────── -->
+<div id="screen-connecting" class="screen">
+  <div class="spinner"></div>
+  <div class="connecting-label">Connecting…</div>
+  <div id="connecting-step" class="connecting-step">Starting MQTT signaling</div>
+  <button id="btn-cancel" class="btn-cancel">Cancel</button>
+</div>
+
+<!-- ── Clips ───────────────────────────────────────────────────────────────── -->
+<div id="screen-clips" class="screen">
+  <div class="clips-header">
+    <div class="hub-dot"></div>
+    <span id="clips-hub-label" class="hub-label">hub-home-abc123</span>
+    <button id="btn-disconnect" class="btn-disconnect">Disconnect</button>
+  </div>
+  <div class="clips-list" id="clips-list">
+    <div class="clips-empty">Loading clips…</div>
+  </div>
+</div>
+
+<!-- ── Player ──────────────────────────────────────────────────────────────── -->
+<div id="screen-player" class="screen" style="position:relative;">
+  <div class="player-topbar">
+    <button id="btn-back" class="btn-back">← Back</button>
+    <span id="player-clip-id" class="player-clip-id"></span>
+  </div>
+  <video id="player-video" playsinline autoplay></video>
+  <div id="player-status" class="player-status"></div>
+</div>
+
+<!-- ── Error banner ────────────────────────────────────────────────────────── -->
+<div id="error-banner"></div>
+
+<script>
+'use strict';
+
+// ── Utilities ─────────────────────────────────────────────────────────────────
+
+function uuid() {
+  return crypto.randomUUID ? crypto.randomUUID()
+    : ([1e7]+-1e3+-4e3+-8e3+-1e11).replace(/[018]/g, c =>
+        (c ^ crypto.getRandomValues(new Uint8Array(1))[0] & 15 >> c / 4).toString(16));
+}
+
+function fmt(sec) {
+  const m = Math.floor(sec / 60);
+  const s = Math.floor(sec % 60);
+  return `${m}:${String(s).padStart(2, '0')}`;
+}
+
+// ── Screen navigation ─────────────────────────────────────────────────────────
+
+const screens = {
+  connect:    document.getElementById('screen-connect'),
+  connecting: document.getElementById('screen-connecting'),
+  clips:      document.getElementById('screen-clips'),
+  player:     document.getElementById('screen-player'),
+};
+
+function showScreen(name) {
+  Object.values(screens).forEach(s => s.classList.remove('active'));
+  screens[name].classList.add('active');
+}
+
+// ── Error display ─────────────────────────────────────────────────────────────
+
+const errorBanner = document.getElementById('error-banner');
+let errorTimer;
+
+function showError(msg, durationMs = 5000) {
+  errorBanner.textContent = msg;
+  errorBanner.style.display = 'block';
+  clearTimeout(errorTimer);
+  errorTimer = setTimeout(() => { errorBanner.style.display = 'none'; }, durationMs);
+}
+
+// ── Connection state ──────────────────────────────────────────────────────────
+
+let mqttClient   = null;
+let peerConn     = null;
+let dataChannel  = null;
+let sessionId    = null;
+let currentHubId = null;
+let clipList     = [];
+
+// Segment reassembly state
+let pending = null; // { clip_id, segment_index, total, received, chunks: [] }
+
+// ── Step label ────────────────────────────────────────────────────────────────
+
+const stepEl = document.getElementById('connecting-step');
+function setStep(msg) { stepEl.textContent = msg; }
+
+// ── MQTT broker ───────────────────────────────────────────────────────────────
+
+const MQTT_BROKER = 'wss://broker.hivemq.com:8884/mqtt';
+
+// ── ICE servers ───────────────────────────────────────────────────────────────
+
+const ICE_SERVERS = [
+  { urls: 'stun:stun.l.google.com:19302' },
+  { urls: 'stun:stun1.l.google.com:19302' },
+];
+
+// ── Connect flow ──────────────────────────────────────────────────────────────
+
+const CONNECT_TIMEOUT_MS = 15000;
+let connectTimer = null;
+
+function startConnectTimeout() {
+  connectTimer = setTimeout(() => {
+    teardown();
+    showScreen('connect');
+    showError('Connection timed out. Is the hub running?', 8000);
+  }, CONNECT_TIMEOUT_MS);
+}
+
+function clearConnectTimeout() {
+  clearTimeout(connectTimer);
+  connectTimer = null;
+}
+
+function connect(hubId) {
+  currentHubId = hubId;
+  sessionId    = uuid();
+  showScreen('connecting');
+  setStep('Connecting to MQTT broker…');
+  startConnectTimeout();
+
+  const offerTopic    = `nvr/hub/${hubId}/signal`;
+  const answerTopic   = `nvr/hub/${hubId}/signal/reply`;
+  const iceTopic      = `nvr/hub/${hubId}/ice`;
+  const iceReplyTopic = `nvr/hub/${hubId}/ice/reply`;
+
+  mqttClient = mqtt.connect(MQTT_BROKER, {
+    clientId:      `nvr-mobile-${Math.random().toString(16).slice(2, 10)}`,
+    connectTimeout: 10000,
+    reconnectPeriod: 0, // no auto-reconnect — we handle it manually
+  });
+
+  mqttClient.on('connect', () => {
+    setStep('MQTT connected — subscribing…');
+    mqttClient.subscribe([answerTopic, iceReplyTopic], (err) => {
+      if (err) { showError('MQTT subscribe failed'); teardown(); showScreen('connect'); return; }
+      setStep('Subscribed — creating WebRTC offer…');
+      createOffer(hubId, offerTopic, iceTopic, answerTopic, iceReplyTopic);
+    });
+  });
+
+  mqttClient.on('error', (err) => {
+    showError(`MQTT error: ${err.message}`);
+    teardown();
+    showScreen('connect');
+  });
+
+  mqttClient.on('message', (topic, payload) => {
+    let msg;
+    try { msg = JSON.parse(payload.toString()); } catch { return; }
+    if (msg.session_id && msg.session_id !== sessionId) return; // stale session
+
+    if (topic === answerTopic && msg.type === 'answer') {
+      peerConn.setRemoteDescription({ type: 'answer', sdp: msg.sdp });
+      setStep('Answer received — waiting for ICE…');
+      return;
+    }
+    if (topic === iceReplyTopic && msg.candidate) {
+      peerConn.addIceCandidate({ candidate: msg.candidate, sdpMid: msg.sdpMid || '0' }).catch(() => {});
+      return;
+    }
+  });
+}
+
+// ── WebRTC ────────────────────────────────────────────────────────────────────
+
+function createOffer(hubId, offerTopic, iceTopic, answerTopic, iceReplyTopic) {
+  peerConn = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+
+  // DataChannel must be created by the offerer (browser)
+  dataChannel = peerConn.createDataChannel('clip-stream', { ordered: true });
+  dataChannel.binaryType = 'arraybuffer'; // required for iOS Safari
+
+  dataChannel.onopen = () => {
+    clearConnectTimeout();
+    setStep('DataChannel open!');
+    document.getElementById('clips-hub-label').textContent = hubId;
+    showScreen('clips');
+    requestClips();
+  };
+
+  dataChannel.onclose = () => {
+    if (screens.clips.classList.contains('active') || screens.player.classList.contains('active')) {
+      showError('Hub disconnected');
+      teardown();
+      showScreen('connect');
+    }
+  };
+
+  dataChannel.onmessage = handleDataChannelMessage;
+
+  peerConn.onicecandidate = (e) => {
+    if (!e.candidate) return;
+    mqttClient.publish(iceTopic, JSON.stringify({
+      candidate: e.candidate.candidate,
+      sdpMid:    e.candidate.sdpMid,
+      session_id: sessionId,
+    }));
+  };
+
+  peerConn.oniceconnectionstatechange = () => {
+    const s = peerConn.iceConnectionState;
+    setStep(`ICE: ${s}`);
+    if (s === 'failed') {
+      showError('ICE connection failed. Try adding TURN credentials.');
+      teardown();
+      showScreen('connect');
+    }
+  };
+
+  peerConn.createOffer().then(offer => {
+    return peerConn.setLocalDescription(offer);
+  }).then(() => {
+    mqttClient.publish(offerTopic, JSON.stringify({
+      type:       peerConn.localDescription.type,
+      sdp:        peerConn.localDescription.sdp,
+      session_id: sessionId,
+    }));
+    setStep('Offer sent — waiting for hub…');
+  }).catch(err => {
+    showError(`WebRTC offer failed: ${err.message}`);
+    teardown();
+    showScreen('connect');
+  });
+}
+
+// ── DataChannel messages ──────────────────────────────────────────────────────
+
+function dcSend(obj) {
+  if (dataChannel && dataChannel.readyState === 'open') {
+    dataChannel.send(JSON.stringify(obj));
+  }
+}
+
+function requestClips() {
+  dcSend({ type: 'get_clips' });
+}
+
+function handleDataChannelMessage(event) {
+  if (event.data instanceof ArrayBuffer) {
+    // Binary chunk — append to pending segment
+    if (!pending) return;
+    pending.chunks.push(new Uint8Array(event.data));
+    pending.received += event.data.byteLength;
+    return;
+  }
+
+  // Text JSON control message
+  let msg;
+  try { msg = JSON.parse(event.data); } catch { return; }
+
+  if (msg.type === 'clips') {
+    renderClips(msg.data);
+    return;
+  }
+
+  if (msg.type === 'segment_header') {
+    pending = {
+      clip_id:       msg.clip_id,
+      segment_index: msg.segment_index,
+      total:         msg.size_bytes,
+      received:      0,
+      chunks:        [],
+    };
+    return;
+  }
+
+  if (msg.type === 'segment_end') {
+    if (!pending) return;
+    // Assemble full segment
+    const full = new Uint8Array(pending.total);
+    let offset = 0;
+    for (const chunk of pending.chunks) { full.set(chunk, offset); offset += chunk.length; }
+    const p = pending;
+    pending = null;
+    onSegmentReady(p.clip_id, p.segment_index, full);
+    return;
+  }
+
+  if (msg.type === 'error') {
+    showError(`Hub error: ${msg.message}`);
+    setPlayerStatus('');
+    return;
+  }
+}
+
+// ── Clip list UI ──────────────────────────────────────────────────────────────
+
+function renderClips(list) {
+  clipList = list || [];
+  const container = document.getElementById('clips-list');
+
+  if (!clipList.length) {
+    container.innerHTML = '<div class="clips-empty">No clips found on hub.</div>';
+    return;
+  }
+
+  container.innerHTML = '';
+  clipList.forEach(meta => {
+    const c = meta.clip;
+    const card = document.createElement('div');
+    card.className = 'clip-card';
+
+    const thumbSrc = meta._urls && meta._urls.thumbnail;
+    const thumbHtml = thumbSrc
+      ? `<img class="clip-thumb" src="http://${location.hostname}:3000${thumbSrc}" loading="lazy" onerror="this.parentElement.innerHTML='<div class=clip-thumb-placeholder>🎬</div>'">`
+      : `<div class="clip-thumb-placeholder">🎬</div>`;
+
+    const date = new Date(c.created_at).toLocaleDateString();
+    const time = new Date(c.created_at).toLocaleTimeString();
+
+    card.innerHTML = `
+      ${thumbHtml}
+      <div class="clip-info">
+        <div class="clip-id">${c.id}</div>
+        <div class="clip-dev">📷 ${c.device_id}</div>
+        <div class="clip-dur">${fmt(c.duration_seconds)}</div>
+        <div class="clip-date">${date} ${time}</div>
+      </div>
+    `;
+    card.addEventListener('click', () => playClip(meta));
+    container.appendChild(card);
+  });
+}
+
+// ── Playback (MSE + mux.js) ───────────────────────────────────────────────────
+
+let mediaSource  = null;
+let sourceBuffer = null;
+let transmuxer   = null;
+let playingMeta  = null;
+let nextSegment  = 0;
+let segmentCount = 0;
+let sourceQueue  = [];
+let sbUpdating   = false;
+
+const videoEl = document.getElementById('player-video');
+const statusEl = document.getElementById('player-status');
+
+function setPlayerStatus(msg) {
+  if (!msg) { statusEl.style.display = 'none'; return; }
+  statusEl.textContent = msg;
+  statusEl.style.display = 'block';
+}
+
+function playClip(meta) {
+  playingMeta  = meta;
+  nextSegment  = 0;
+  segmentCount = meta.clip.segment_count;
+  sourceQueue  = [];
+  sbUpdating   = false;
+
+  document.getElementById('player-clip-id').textContent = meta.clip.id;
+  showScreen('player');
+  setPlayerStatus('Buffering…');
+
+  // Teardown previous MSE session
+  if (transmuxer) { try { transmuxer.dispose(); } catch {} transmuxer = null; }
+  if (mediaSource) { try { URL.revokeObjectURL(videoEl.src); } catch {} mediaSource = null; sourceBuffer = null; }
+
+  videoEl.removeAttribute('src');
+  videoEl.load();
+
+  mediaSource = new MediaSource();
+  videoEl.src = URL.createObjectURL(mediaSource);
+
+  mediaSource.addEventListener('sourceopen', () => {
+    // Use MP4 container — works on both Chrome (MPEG-TS MSE) and Safari (requires fMP4 via mux.js)
+    const mimeType = 'video/mp4; codecs="avc1.42E01E, mp4a.40.2"';
+    if (!MediaSource.isTypeSupported(mimeType)) {
+      showError('MSE codec not supported on this browser');
+      return;
+    }
+    sourceBuffer = mediaSource.addSourceBuffer(mimeType);
+    sourceBuffer.addEventListener('updateend', drainQueue);
+
+    transmuxer = new muxjs.mp4.Transmuxer();
+    transmuxer.on('data', (segment) => {
+      // mux.js emits init segment + media segments
+      let combined;
+      if (segment.initSegment && segment.initSegment.byteLength > 0) {
+        combined = new Uint8Array(segment.initSegment.byteLength + segment.data.byteLength);
+        combined.set(segment.initSegment, 0);
+        combined.set(new Uint8Array(segment.data), segment.initSegment.byteLength);
+      } else {
+        combined = new Uint8Array(segment.data);
+      }
+      sourceQueue.push(combined.buffer);
+      drainQueue();
+    });
+
+    fetchSegment(0);
+  }, { once: true });
+
+  videoEl.ontimeupdate = () => {
+    if (!playingMeta) return;
+    const segDur = playingMeta.clip.segment_duration_seconds;
+    const ahead  = Math.floor(videoEl.currentTime / segDur) + 2; // prefetch 1 ahead
+    if (ahead > nextSegment && nextSegment < segmentCount) {
+      fetchSegment(nextSegment);
+    }
+  };
+}
+
+function drainQueue() {
+  if (sbUpdating || !sourceBuffer || sourceBuffer.updating || !sourceQueue.length) return;
+  sbUpdating = true;
+  const chunk = sourceQueue.shift();
+  try {
+    sourceBuffer.appendBuffer(chunk);
+  } catch (e) {
+    sbUpdating = false;
+    showError(`Buffer error: ${e.message}`);
+  }
+  sourceBuffer.addEventListener('updateend', () => {
+    sbUpdating = false;
+    if (sourceQueue.length) drainQueue();
+    else if (nextSegment >= segmentCount && mediaSource.readyState === 'open') {
+      try { mediaSource.endOfStream(); } catch {}
+    }
+  }, { once: true });
+}
+
+function fetchSegment(index) {
+  if (index >= segmentCount) return;
+  nextSegment = index + 1;
+  setPlayerStatus(`Loading segment ${index + 1} / ${segmentCount}…`);
+  dcSend({ type: 'get_segment', clip_id: playingMeta.clip.id, segment_index: index });
+}
+
+function onSegmentReady(clipId, segmentIndex, tsBytes) {
+  if (!playingMeta || playingMeta.clip.id !== clipId) return;
+  setPlayerStatus('');
+
+  // Push into mux.js transmuxer; it will call the 'data' handler above
+  transmuxer.push(tsBytes);
+  transmuxer.flush();
+
+  // Prefetch next segment when near the end
+  const segDur = playingMeta.clip.segment_duration_seconds;
+  const ahead  = Math.floor(videoEl.currentTime / segDur) + 2;
+  if (ahead > nextSegment && nextSegment < segmentCount) {
+    fetchSegment(nextSegment);
+  }
+}
+
+// ── Teardown ──────────────────────────────────────────────────────────────────
+
+function teardown() {
+  clearConnectTimeout();
+
+  playingMeta = null;
+  if (transmuxer) { try { transmuxer.dispose(); } catch {} transmuxer = null; }
+  if (mediaSource && mediaSource.readyState === 'open') {
+    try { mediaSource.endOfStream(); } catch {}
+  }
+  if (videoEl.src) { URL.revokeObjectURL(videoEl.src); videoEl.removeAttribute('src'); videoEl.load(); }
+  mediaSource  = null;
+  sourceBuffer = null;
+
+  if (dataChannel) { try { dataChannel.close(); } catch {} dataChannel = null; }
+  if (peerConn)    { try { peerConn.close();    } catch {} peerConn    = null; }
+  if (mqttClient)  { mqttClient.end(true);                  mqttClient  = null; }
+
+  sessionId    = null;
+  currentHubId = null;
+  clipList     = [];
+}
+
+// ── Button handlers ───────────────────────────────────────────────────────────
+
+document.getElementById('btn-connect').addEventListener('click', () => {
+  const hubId = document.getElementById('input-hub-id').value.trim();
+  if (!hubId) { showError('Enter a Hub ID'); return; }
+  connect(hubId);
+});
+
+document.getElementById('input-hub-id').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') document.getElementById('btn-connect').click();
+});
+
+document.getElementById('btn-cancel').addEventListener('click', () => {
+  teardown();
+  showScreen('connect');
+});
+
+document.getElementById('btn-disconnect').addEventListener('click', () => {
+  teardown();
+  showScreen('connect');
+});
+
+document.getElementById('btn-back').addEventListener('click', () => {
+  showScreen('clips');
+  setPlayerStatus('');
+  // Keep dataChannel alive — only stop MSE
+  if (transmuxer)  { try { transmuxer.dispose();    } catch {} transmuxer  = null; }
+  if (mediaSource && mediaSource.readyState === 'open') { try { mediaSource.endOfStream(); } catch {} }
+  if (videoEl.src) { URL.revokeObjectURL(videoEl.src); videoEl.removeAttribute('src'); videoEl.load(); }
+  mediaSource = null; sourceBuffer = null; playingMeta = null;
+});
+</script>
+</body>
+</html>
