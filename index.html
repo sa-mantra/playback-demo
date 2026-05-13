@@ -534,9 +534,17 @@ function handleDCMessage(event) {
   try { msg = JSON.parse(event.data); } catch { return; }
 
   if (msg.type === 'clips')          { renderClips(msg.data);                                        return; }
+  if (msg.type === 'thumbnail')      { applyThumbnail(msg.clip_id, msg.data);                        return; }
   if (msg.type === 'segment_header') { pending = { clip_id: msg.clip_id, segment_index: msg.segment_index, total: msg.size_bytes, received: 0, chunks: [] }; return; }
   if (msg.type === 'segment_end')    { if (!pending) return; const p = pending; pending = null; assembleSegment(p); return; }
   if (msg.type === 'error')          { showStatus(`Hub: ${msg.message}`, 5000); return; }
+}
+
+// ── Thumbnail (received as base64 over DataChannel) ───────────────────────────
+function applyThumbnail(clipId, b64) {
+  const wrap = document.querySelector(`[data-clip-thumb="${clipId}"]`);
+  if (!wrap) return;
+  wrap.innerHTML = `<img src="data:image/jpeg;base64,${b64}" alt="thumb" style="width:100%;height:100%;object-fit:cover;">`;
 }
 
 // ── Clip list ─────────────────────────────────────────────────────────────────
@@ -558,15 +566,13 @@ function renderClips(list) {
     const item = document.createElement('div');
     item.className = 'event-item';
 
-    const thumbHtml = meta._urls && meta._urls.thumbnail
-      ? `<img src="${meta._urls.thumbnail}" alt="thumb" loading="lazy" onerror="this.parentElement.innerHTML='<div class=no-thumb>🎬</div>'">`
-      : `<div class="no-thumb">🎬</div>`;
-
     const date = new Date(c.created_at).toLocaleDateString();
     const time = new Date(c.created_at).toLocaleTimeString();
 
     item.innerHTML = `
-      <div class="thumb-wrap">${thumbHtml}</div>
+      <div class="thumb-wrap" data-clip-thumb="${c.id}">
+        <div class="no-thumb">🎬</div>
+      </div>
       <div class="event-info">
         <div class="ev-id">${c.id}</div>
         <div class="ev-device">📷 ${c.device_id}</div>
@@ -580,6 +586,9 @@ function renderClips(list) {
     });
     el.appendChild(item);
   });
+
+  // Request thumbnails over DataChannel — avoids any HTTP dependency
+  list.forEach(meta => dcSend({ type: 'get_thumbnail', clip_id: meta.clip.id }));
 }
 
 // ── Playback (MSE + mux.js) ───────────────────────────────────────────────────
