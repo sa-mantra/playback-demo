@@ -534,13 +534,28 @@ function handleDCMessage(event) {
   try { msg = JSON.parse(event.data); } catch { return; }
 
   if (msg.type === 'clips')          { renderClips(msg.data);                                        return; }
-  if (msg.type === 'thumbnail')      { applyThumbnail(msg.clip_id, msg.data);                        return; }
+  if (msg.type === 'thumb_chunk')    { receiveThumbChunk(msg);                                       return; }
   if (msg.type === 'segment_header') { pending = { clip_id: msg.clip_id, segment_index: msg.segment_index, total: msg.size_bytes, received: 0, chunks: [] }; return; }
   if (msg.type === 'segment_end')    { if (!pending) return; const p = pending; pending = null; assembleSegment(p); return; }
   if (msg.type === 'error')          { showStatus(`Hub: ${msg.message}`, 5000); return; }
 }
 
-// ── Thumbnail (received as base64 over DataChannel) ───────────────────────────
+// ── Thumbnail (chunked base64 over DataChannel) ────────────────────────────────
+const thumbChunks = new Map(); // clip_id → { chunks[], received, total }
+
+function receiveThumbChunk(msg) {
+  if (!thumbChunks.has(msg.clip_id)) {
+    thumbChunks.set(msg.clip_id, { chunks: new Array(msg.total), received: 0, total: msg.total });
+  }
+  const state = thumbChunks.get(msg.clip_id);
+  state.chunks[msg.index] = msg.data;
+  state.received++;
+  if (state.received === state.total) {
+    thumbChunks.delete(msg.clip_id);
+    applyThumbnail(msg.clip_id, state.chunks.join(''));
+  }
+}
+
 function applyThumbnail(clipId, b64) {
   const wrap = document.querySelector(`[data-clip-thumb="${clipId}"]`);
   if (!wrap) return;
