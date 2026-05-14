@@ -436,15 +436,14 @@ function connect(hubId) {
   sigWs = new WebSocket(url);
 
   sigWs.onopen = () => {
+    console.log('[NVR] Signalling connected — requesting ICE config from hub');
     setStep('Fetching ICE config from hub…');
-    // Ask the hub for TURN credentials. The hub replies with ice_config over the
-    // same channel. Credentials never touch this file — they live on the hub only.
     sigWs.send(JSON.stringify({ type: 'request_ice_config', session_id: sessionId }));
     // If the hub doesn't reply within 5 s (e.g. hub offline), fall back to STUN-only
-    // so LAN connections still work without blocking the full 30 s timeout.
     iceConfigTimer = setTimeout(() => {
       iceConfigTimer = null;
       if (!peerConn) {
+        console.warn('[NVR] No ice_config from hub within 5s — falling back to STUN-only. Remote connections will likely fail.');
         setStep('Hub unreachable for ICE config — trying STUN-only…');
         createOffer(hubId, STUN_ONLY);
       }
@@ -468,6 +467,7 @@ function connect(hubId) {
 
     if (msg.type === 'ice_config' && msg.ice_servers) {
       clearTimeout(iceConfigTimer); iceConfigTimer = null;
+      console.log('[NVR] ice_config received from hub:', JSON.stringify(msg.ice_servers.map(s => s.urls)));
       setStep('ICE config received — creating WebRTC offer…');
       createOffer(hubId, msg.ice_servers);
       return;
@@ -505,7 +505,26 @@ function createOffer(hubId, iceServerList) {
 
   dataChannel.onmessage = handleDCMessage;
 
+  peerConn.oniceconnectionstatechange = () => {
+    const s = peerConn.iceConnectionState;
+    console.log('[NVR] ICE state:', s);
+    setStep(`ICE: ${s}`);
+    if (s === 'failed') {
+      teardown(); showScreen('connect');
+      alert('ICE connection failed. Check browser console for details.');
+    }
+  };
+
+  peerConn.onicegatheringstatechange = () => {
+    console.log('[NVR] ICE gathering:', peerConn.iceGatheringState);
+  };
+
   peerConn.onicecandidate = e => {
+    if (e.candidate) {
+      console.log('[NVR] Local ICE candidate:', e.candidate.type, e.candidate.protocol, e.candidate.address);
+    } else {
+      console.log('[NVR] ICE gathering complete');
+    }
     if (!e.candidate || !sigWs || sigWs.readyState !== WebSocket.OPEN) return;
     sigWs.send(JSON.stringify({
       type:      'ice_candidate',
@@ -513,15 +532,6 @@ function createOffer(hubId, iceServerList) {
       sdpMid:    e.candidate.sdpMid,
       session_id: sessionId,
     }));
-  };
-
-  peerConn.oniceconnectionstatechange = () => {
-    const s = peerConn.iceConnectionState;
-    setStep(`ICE: ${s}`);
-    if (s === 'failed') {
-      teardown(); showScreen('connect');
-      alert('ICE connection failed. Add TURN credentials for remote access.');
-    }
   };
 
   peerConn.createOffer()
