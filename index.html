@@ -653,16 +653,19 @@ const metaPanel = document.getElementById('meta-panel');
 const metaGrid  = document.getElementById('meta-grid');
 const placeholder = document.getElementById('placeholder');
 
-let mediaSource  = null;
-let sourceBuffer = null;
-let transmuxer   = null;
-let playingMeta  = null;
-let nextSegment  = 0;
-let segmentCount = 0;
-let sourceQueue  = [];
-let sbBusy       = false;
+let mediaSource       = null;
+let sourceBuffer      = null;
+let transmuxer        = null;
+let playingMeta       = null;
+let nextSegment       = 0;
+let segmentCount      = 0;
+let segmentsAssembled = 0;
+let sourceQueue       = [];
+let sbBusy            = false;
+let segmentTimer      = null;
 
 function stopPlayback() {
+  clearTimeout(segmentTimer); segmentTimer = null;
   playingMeta = null;
   if (transmuxer)  { try { transmuxer.dispose(); } catch {} transmuxer  = null; }
   if (mediaSource && mediaSource.readyState === 'open') { try { mediaSource.endOfStream(); } catch {} }
@@ -672,9 +675,10 @@ function stopPlayback() {
 
 function playClip(meta) {
   stopPlayback();
-  playingMeta  = meta;
-  nextSegment  = 0;
-  segmentCount = meta.clip.segment_count;
+  playingMeta       = meta;
+  nextSegment       = 0;
+  segmentCount      = meta.clip.segment_count;
+  segmentsAssembled = 0;
 
   document.getElementById('player-clip-id').textContent = meta.clip.id;
   showScreen('player');
@@ -708,6 +712,9 @@ function playClip(meta) {
     });
 
     fetchSegment(0);
+    // 2-ahead: request seg 1 immediately so the hub sends 0 and 1 back-to-back,
+    // eliminating the RTT gap that causes buffering on remote connections.
+    if (segmentCount > 1) fetchSegment(1);
   }, { once: true });
 
 }
@@ -716,13 +723,13 @@ function drainQueue() {
   if (sbBusy || !sourceBuffer || sourceBuffer.updating || !sourceQueue.length) return;
   sbBusy = true;
 
-  // Evict already-played content to prevent QuotaExceededError on long videos
-  const ct = videoEl.currentTime;
-  if (ct > 10 && sourceBuffer.buffered.length > 0) {
-    const evictTo = ct - 5;
-    if (evictTo > 0 && sourceBuffer.buffered.start(0) < evictTo - 0.5) {
+  // Evict already-played content to prevent QuotaExceededError — runs at any playhead position
+  if (sourceBuffer.buffered.length > 0) {
+    const bufStart = sourceBuffer.buffered.start(0);
+    const evictTo  = Math.max(0, videoEl.currentTime - 5);
+    if (evictTo > 0.5 && bufStart < evictTo - 0.5) {
       try {
-        sourceBuffer.remove(0, evictTo);
+        sourceBuffer.remove(bufStart, evictTo);
         sourceBuffer.addEventListener('updateend', () => { sbBusy = false; drainQueue(); }, { once: true });
         return;
       } catch {}
@@ -743,7 +750,7 @@ function drainQueue() {
   sourceBuffer.addEventListener('updateend', () => {
     sbBusy = false;
     if (sourceQueue.length) drainQueue();
-    else if (nextSegment >= segmentCount && mediaSource && mediaSource.readyState === 'open') {
+    else if (segmentsAssembled >= segmentCount && mediaSource && mediaSource.readyState === 'open') {
       try { mediaSource.endOfStream(); } catch {}
     }
   }, { once: true });
@@ -752,13 +759,34 @@ function drainQueue() {
 function fetchSegment(index) {
   if (index >= segmentCount) return;
   nextSegment = index + 1;
+  clearTimeout(segmentTimer);
+  segmentTimer = setTimeout(() => {
+    // Segment transfer stalled — retry the same index
+    if (pending && pending.segment_index === index) {
+      pending = null;
+      fetchSegment(index);
+    }
+  }, 30000);
   showStatus(`Loading segment ${index + 1} / ${segmentCount}…`, 0);
   dcSend({ type: 'get_segment', clip_id: playingMeta.clip.id, segment_index: index });
 }
 
 function assembleSegment(p) {
   if (!playingMeta || playingMeta.clip.id !== p.clip_id) return;
-  const full = new Uint8Array(p.total);
+  segmentsAssembled++;
+
+  // Guard: if fewer bytes arrived than promised, the MPEG-TS stream is truncated.
+  // Passing corrupt data to mux.js poisons its internal state for all future segments.
+  if (p.received !== p.total) {
+    showStatus(`Seg ${p.segment_index + 1} incomplete (${p.received}/${p.total}B) — skipped`, 4000);
+    if (segmentsAssembled >= segmentCount && sourceQueue.length === 0 &&
+        mediaSource && mediaSource.readyState === 'open') {
+      try { mediaSource.endOfStream(); } catch {}
+    }
+    return;
+  }
+
+  const full = new Uint8Array(p.received);
   let off = 0;
   for (const c of p.chunks) { full.set(c, off); off += c.length; }
 
