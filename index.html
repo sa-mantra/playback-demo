@@ -664,6 +664,23 @@ let sourceQueue       = [];
 let sbBusy            = false;
 let segmentTimer      = null;
 
+// Gap-jump: chunk_000 has 3877ms of audio vs 4000ms of video, leaving an ~83ms
+// audio gap at ~3.94s. Mobile browsers without built-in gap-jumping stall there.
+// When 'waiting' fires, seek past any small (≤500ms) gap just ahead.
+videoEl.addEventListener('waiting', () => {
+  if (!sourceBuffer || !playingMeta) return;
+  const ct  = videoEl.currentTime;
+  const buf = sourceBuffer.buffered;
+  for (let i = 0; i + 1 < buf.length; i++) {
+    const segEnd  = buf.end(i);
+    const nextStart = buf.start(i + 1);
+    if (ct >= segEnd - 0.15 && nextStart - segEnd <= 0.5) {
+      videoEl.currentTime = nextStart + 0.01;
+      return;
+    }
+  }
+});
+
 function stopPlayback() {
   clearTimeout(segmentTimer); segmentTimer = null;
   playingMeta = null;
