@@ -691,10 +691,14 @@ function playClip(meta) {
   videoEl.src = URL.createObjectURL(mediaSource);
 
   mediaSource.addEventListener('sourceopen', () => {
-    const mime = 'video/mp4; codecs="avc1.42E01E, mp4a.40.2"';
+    // avc1.640020 = H.264 High profile level 3.2 — matches actual encoder output (ffprobe: High/32)
+    const mime = 'video/mp4; codecs="avc1.640020, mp4a.40.2"';
     if (!MediaSource.isTypeSupported(mime)) { showStatus('Codec not supported', 5000); return; }
 
     sourceBuffer = mediaSource.addSourceBuffer(mime);
+    // 'sequence' mode ignores PTS/DTS from mux.js and appends segments back-to-back,
+    // preventing the ~1.48s PTS offset in these chunks from creating a timeline gap.
+    sourceBuffer.mode = 'sequence';
     sourceBuffer.addEventListener('updateend', drainQueue);
 
     transmuxer = new muxjs.mp4.Transmuxer();
