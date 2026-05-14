@@ -775,10 +775,12 @@ function assembleSegment(p) {
   if (!playingMeta || playingMeta.clip.id !== p.clip_id) return;
   segmentsAssembled++;
 
-  // Guard: if fewer bytes arrived than promised, the MPEG-TS stream is truncated.
-  // Passing corrupt data to mux.js poisons its internal state for all future segments.
-  if (p.received !== p.total) {
-    showStatus(`Seg ${p.segment_index + 1} incomplete (${p.received}/${p.total}B) — skipped`, 4000);
+  // Derive actual size from chunk array — never trust p.received alone, as any
+  // drift between the counter and the chunks would crash Uint8Array.set().
+  const actualBytes = p.chunks.reduce((s, c) => s + c.length, 0);
+
+  if (actualBytes !== p.total) {
+    showStatus(`Seg ${p.segment_index + 1} incomplete (${actualBytes}/${p.total}B) — skipped`, 4000);
     if (segmentsAssembled >= segmentCount && sourceQueue.length === 0 &&
         mediaSource && mediaSource.readyState === 'open') {
       try { mediaSource.endOfStream(); } catch {}
@@ -786,7 +788,7 @@ function assembleSegment(p) {
     return;
   }
 
-  const full = new Uint8Array(p.received);
+  const full = new Uint8Array(actualBytes);
   let off = 0;
   for (const c of p.chunks) { full.set(c, off); off += c.length; }
 
