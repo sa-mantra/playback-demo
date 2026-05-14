@@ -4,7 +4,6 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0" />
   <title>NVR Mobile</title>
-  <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/mux.js/dist/mux.js"></script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -303,7 +302,7 @@
   <div class="body">
     <div class="spinner"></div>
     <div class="connecting-label">Establishing connection</div>
-    <div id="connecting-step" class="connecting-step">Starting MQTT signaling…</div>
+    <div id="connecting-step" class="connecting-step">Connecting to signalling server…</div>
     <button id="btn-cancel" class="btn-cancel">Cancel</button>
   </div>
 </div>
@@ -386,8 +385,10 @@ function showStatus(msg, dur = 3000) {
 }
 function hideStatus() { statusEl.style.display = 'none'; }
 
-// ── Connection state ───────────────────────────────────────────────────────────
-let mqttClient  = null;
+// ── Signalling & connection state ──────────────────────────────────────────────
+const PIESOCKET_API_KEY = '8CUvJWxkybfKYxXN9KSwHQ53Sb6IezDRqMf2z0wi';
+
+let sigWs       = null;
 let peerConn    = null;
 let dataChannel = null;
 let sessionId   = null;
@@ -395,7 +396,6 @@ let currentHubId = null;
 let pending     = null; // segment reassembly
 let dlPending   = null; // download reassembly
 
-const MQTT_BROKER = 'wss://broker.hivemq.com:8884/mqtt';
 const ICE_SERVERS = [
   { urls: 'stun:stun.l.google.com:19302' },
   { urls: 'stun:stun1.l.google.com:19302' },
@@ -418,49 +418,46 @@ function connect(hubId) {
   currentHubId = hubId;
   sessionId    = uuid();
   showScreen('connecting');
-  setStep('Connecting to MQTT broker…');
+  setStep('Connecting to signalling server…');
   startConnectTimeout();
 
-  const offerTopic    = `nvr/hub/${hubId}/signal`;
-  const answerTopic   = `nvr/hub/${hubId}/signal/reply`;
-  const iceTopic      = `nvr/hub/${hubId}/ice`;
-  const iceReplyTopic = `nvr/hub/${hubId}/ice/reply`;
+  // Each hub gets its own PieSocket channel so messages are naturally isolated per hub
+  const url = `wss://s18064.blr1.piesocket.com/v3/${hubId}?api_key=${PIESOCKET_API_KEY}`;
+  sigWs = new WebSocket(url);
 
-  mqttClient = mqtt.connect(MQTT_BROKER, {
-    clientId: `nvr-mobile-${Math.random().toString(16).slice(2, 10)}`,
-    connectTimeout: 10000,
-    reconnectPeriod: 0,
-  });
+  sigWs.onopen = () => {
+    setStep('Connected — creating WebRTC offer…');
+    createOffer(hubId);
+  };
 
-  mqttClient.on('connect', () => {
-    setStep('Connected — subscribing…');
-    mqttClient.subscribe([answerTopic, iceReplyTopic], err => {
-      if (err) { teardown(); showScreen('connect'); return; }
-      setStep('Creating WebRTC offer…');
-      createOffer(hubId, offerTopic, iceTopic);
-    });
-  });
+  sigWs.onerror = () => { teardown(); showScreen('connect'); };
 
-  mqttClient.on('error', err => { teardown(); showScreen('connect'); });
+  sigWs.onclose = () => {
+    if (['clips','player'].some(s => document.getElementById(`screen-${s}`).classList.contains('active'))) {
+      teardown(); showScreen('connect');
+    }
+  };
 
-  mqttClient.on('message', (topic, payload) => {
+  sigWs.onmessage = (event) => {
     let msg;
-    try { msg = JSON.parse(payload.toString()); } catch { return; }
+    try { msg = JSON.parse(event.data); } catch { return; }
+
+    // Ignore messages not addressed to this session
     if (msg.session_id && msg.session_id !== sessionId) return;
 
-    if (topic === answerTopic && msg.type === 'answer') {
+    if (msg.type === 'answer' && msg.sdp) {
       peerConn.setRemoteDescription({ type: 'answer', sdp: msg.sdp });
       setStep('Answer received — waiting for ICE…');
       return;
     }
-    if (topic === iceReplyTopic && msg.candidate) {
+    if (msg.type === 'ice_reply' && msg.candidate) {
       peerConn.addIceCandidate({ candidate: msg.candidate, sdpMid: msg.sdpMid || '0' }).catch(() => {});
       return;
     }
-  });
+  };
 }
 
-function createOffer(hubId, offerTopic, iceTopic) {
+function createOffer(hubId) {
   peerConn = new RTCPeerConnection({ iceServers: ICE_SERVERS });
 
   dataChannel = peerConn.createDataChannel('clip-stream', { ordered: true });
@@ -482,9 +479,12 @@ function createOffer(hubId, offerTopic, iceTopic) {
   dataChannel.onmessage = handleDCMessage;
 
   peerConn.onicecandidate = e => {
-    if (!e.candidate) return;
-    mqttClient.publish(iceTopic, JSON.stringify({
-      candidate: e.candidate.candidate, sdpMid: e.candidate.sdpMid, session_id: sessionId,
+    if (!e.candidate || !sigWs || sigWs.readyState !== WebSocket.OPEN) return;
+    sigWs.send(JSON.stringify({
+      type:      'ice_candidate',
+      candidate: e.candidate.candidate,
+      sdpMid:    e.candidate.sdpMid,
+      session_id: sessionId,
     }));
   };
 
@@ -500,9 +500,9 @@ function createOffer(hubId, offerTopic, iceTopic) {
   peerConn.createOffer()
     .then(o => peerConn.setLocalDescription(o))
     .then(() => {
-      mqttClient.publish(offerTopic, JSON.stringify({
-        type: peerConn.localDescription.type,
-        sdp:  peerConn.localDescription.sdp,
+      sigWs.send(JSON.stringify({
+        type:       'offer',
+        sdp:        peerConn.localDescription.sdp,
         session_id: sessionId,
       }));
       setStep('Offer sent — waiting for hub…');
@@ -516,7 +516,7 @@ function teardown() {
   stopPlayback();
   if (dataChannel) { try { dataChannel.close(); } catch {} dataChannel = null; }
   if (peerConn)    { try { peerConn.close();    } catch {} peerConn    = null; }
-  if (mqttClient)  { mqttClient.end(true);                  mqttClient  = null; }
+  if (sigWs)       { sigWs.close();                        sigWs       = null; }
   sessionId = null; currentHubId = null; pending = null; dlPending = null;
 }
 
@@ -578,7 +578,7 @@ function handleDCMessage(event) {
     document.getElementById('dl-progress').style.display = 'none';
     return;
   }
-  if (msg.type === 'error')          { showStatus(`Hub: ${msg.message}`, 5000); return; }
+  if (msg.type === 'error') { showStatus(`Hub: ${msg.message}`, 5000); return; }
 }
 
 // ── Thumbnail (chunked base64 over DataChannel) ────────────────────────────────
@@ -713,9 +713,10 @@ function playClip(meta) {
     if (!MediaSource.isTypeSupported(mime)) { showStatus('Codec not supported', 5000); return; }
 
     sourceBuffer = mediaSource.addSourceBuffer(mime);
-    // 'sequence' mode ignores PTS/DTS from mux.js and appends segments back-to-back,
-    // preventing the ~1.48s PTS offset in these chunks from creating a timeline gap.
-    sourceBuffer.mode = 'sequence';
+    // 'sequence' mode helps on browsers that don't gap-jump natively; mux.js already
+    // normalises timestamps to 0 so this is a safety net, not a hard requirement.
+    // Guard: Safari < 15.1 / old WKWebView throw or silently ignore the assignment.
+    try { sourceBuffer.mode = 'sequence'; } catch (_) {}
     sourceBuffer.addEventListener('updateend', drainQueue);
 
     transmuxer = new muxjs.mp4.Transmuxer();
@@ -737,7 +738,6 @@ function playClip(meta) {
     // eliminating the RTT gap that causes buffering on remote connections.
     if (segmentCount > 1) fetchSegment(1);
   }, { once: true });
-
 }
 
 function drainQueue() {
