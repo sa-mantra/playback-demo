@@ -166,7 +166,8 @@
       align-items: center;
       justify-content: center;
       padding: 32px 24px;
-      gap: 20px;
+      gap: 16px;
+      overflow-y: auto;
     }
     .connect-sub { font-size: 13px; color: var(--muted); text-align: center; line-height: 1.6; }
     .form-group { width: 100%; max-width: 340px; display: flex; flex-direction: column; gap: 6px; }
@@ -187,6 +188,7 @@
       border: none; border-radius: 8px;
       font-size: 15px; font-weight: 700;
       cursor: pointer; -webkit-appearance: none;
+      margin-top: 4px;
     }
     .btn-connect:active { opacity: 0.85; }
 
@@ -282,12 +284,14 @@
   </header>
   <div class="body">
     <div class="connect-sub">Connect to your hub over WebRTC.<br>Works on the same LAN or remotely.</div>
+
     <div class="form-group">
       <label class="form-label" for="input-hub-id">Hub ID</label>
       <input id="input-hub-id" class="form-input" type="text"
              value="hub-home-abc123"
              autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" />
     </div>
+
     <button id="btn-connect" class="btn-connect">Connect</button>
   </div>
 </div>
@@ -388,15 +392,18 @@ function hideStatus() { statusEl.style.display = 'none'; }
 // ── Signalling & connection state ──────────────────────────────────────────────
 const PIESOCKET_API_KEY = '8CUvJWxkybfKYxXN9KSwHQ53Sb6IezDRqMf2z0wi';
 
-let sigWs       = null;
-let peerConn    = null;
-let dataChannel = null;
-let sessionId   = null;
-let currentHubId = null;
-let pending     = null; // segment reassembly
-let dlPending   = null; // download reassembly
+let sigWs          = null;
+let peerConn       = null;
+let dataChannel    = null;
+let sessionId      = null;
+let currentHubId   = null;
+let iceConfigTimer = null; // fallback if hub doesn't reply to request_ice_config
+let pending        = null; // segment reassembly
+let dlPending      = null; // download reassembly
 
-const ICE_SERVERS = [
+// ICE servers are fetched from the hub via signalling — never stored in this file.
+// Fallback to STUN-only if the hub doesn't respond in time (LAN use case).
+const STUN_ONLY = [
   { urls: 'stun:stun.l.google.com:19302' },
   { urls: 'stun:stun1.l.google.com:19302' },
 ];
@@ -409,12 +416,15 @@ let connectTimer = null;
 function startConnectTimeout() {
   connectTimer = setTimeout(() => {
     teardown(); showScreen('connect');
-    alert('Connection timed out. Is the hub running?');
-  }, 15000);
+    alert('Connection timed out.\n\nThe hub was reachable via signalling but WebRTC ICE negotiation failed. Check that the hub\'s TURN server is reachable and that TURN_USER / TURN_PASS env vars are set correctly on the hub.');
+  }, 30000);
 }
 function clearConnectTimeout() { clearTimeout(connectTimer); connectTimer = null; }
 
 function connect(hubId) {
+  // Persist hub ID so the user doesn't re-enter it on next visit
+  try { localStorage.setItem('nvr-hub-id', hubId); } catch {}
+
   currentHubId = hubId;
   sessionId    = uuid();
   showScreen('connecting');
@@ -426,8 +436,19 @@ function connect(hubId) {
   sigWs = new WebSocket(url);
 
   sigWs.onopen = () => {
-    setStep('Connected — creating WebRTC offer…');
-    createOffer(hubId);
+    setStep('Fetching ICE config from hub…');
+    // Ask the hub for TURN credentials. The hub replies with ice_config over the
+    // same channel. Credentials never touch this file — they live on the hub only.
+    sigWs.send(JSON.stringify({ type: 'request_ice_config', session_id: sessionId }));
+    // If the hub doesn't reply within 5 s (e.g. hub offline), fall back to STUN-only
+    // so LAN connections still work without blocking the full 30 s timeout.
+    iceConfigTimer = setTimeout(() => {
+      iceConfigTimer = null;
+      if (!peerConn) {
+        setStep('Hub unreachable for ICE config — trying STUN-only…');
+        createOffer(hubId, STUN_ONLY);
+      }
+    }, 5000);
   };
 
   sigWs.onerror = () => { teardown(); showScreen('connect'); };
@@ -445,6 +466,12 @@ function connect(hubId) {
     // Ignore messages not addressed to this session
     if (msg.session_id && msg.session_id !== sessionId) return;
 
+    if (msg.type === 'ice_config' && msg.ice_servers) {
+      clearTimeout(iceConfigTimer); iceConfigTimer = null;
+      setStep('ICE config received — creating WebRTC offer…');
+      createOffer(hubId, msg.ice_servers);
+      return;
+    }
     if (msg.type === 'answer' && msg.sdp) {
       peerConn.setRemoteDescription({ type: 'answer', sdp: msg.sdp });
       setStep('Answer received — waiting for ICE…');
@@ -457,8 +484,8 @@ function connect(hubId) {
   };
 }
 
-function createOffer(hubId) {
-  peerConn = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+function createOffer(hubId, iceServerList) {
+  peerConn = new RTCPeerConnection({ iceServers: iceServerList });
 
   dataChannel = peerConn.createDataChannel('clip-stream', { ordered: true });
   dataChannel.binaryType = 'arraybuffer';
@@ -513,6 +540,7 @@ function createOffer(hubId) {
 // ── Teardown ───────────────────────────────────────────────────────────────────
 function teardown() {
   clearConnectTimeout();
+  clearTimeout(iceConfigTimer); iceConfigTimer = null;
   stopPlayback();
   if (dataChannel) { try { dataChannel.close(); } catch {} dataChannel = null; }
   if (peerConn)    { try { peerConn.close();    } catch {} peerConn    = null; }
@@ -847,6 +875,12 @@ function renderMeta(meta) {
     </div>`).join('');
   metaPanel.classList.remove('hidden');
 }
+
+// ── Restore saved hub ID ───────────────────────────────────────────────────────
+try {
+  const savedHubId = localStorage.getItem('nvr-hub-id');
+  if (savedHubId) document.getElementById('input-hub-id').value = savedHubId;
+} catch {}
 
 // ── Button wiring ──────────────────────────────────────────────────────────────
 document.getElementById('btn-connect').addEventListener('click', () => {
